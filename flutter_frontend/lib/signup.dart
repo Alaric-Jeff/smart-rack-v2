@@ -418,11 +418,11 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
               decoration: BoxDecoration(
                 color: _cardColor,
                 borderRadius: BorderRadius.circular(24.0),
-                boxShadow: [
+                boxShadow: const [
                   BoxShadow(
-                    color: const Color.fromRGBO(0, 0, 0, 0.05),
+                    color: Color.fromRGBO(0, 0, 0, 0.05),
                     blurRadius: 20,
-                    offset: const Offset(0, 5),
+                    offset: Offset(0, 5),
                   ),
                 ],
               ),
