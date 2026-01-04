@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'controls.dart'; 
-import 'notification.dart'; // <--- MAKE SURE YOUR FILE IS NAMED 'notification.dart'
+import 'notification.dart';
 import 'settings.dart'; 
-import 'edit_profile.dart'; // <--- Import the Edit Profile screen
+import 'edit_profile.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -17,10 +19,10 @@ class _HomeScreenState extends State<HomeScreen> {
   int _selectedIndex = 0;
 
   final List<Widget> _pages = [
-    const DashboardContent(),      // Index 0: Home
-    const ControlsScreen(),        // Index 1: Controls
-    const NotificationsScreen(),   // Index 2: Notifications
-    const SettingsScreen(),        // Index 3: Settings
+    const DashboardContent(),
+    const ControlsScreen(),
+    const NotificationsScreen(),
+    const SettingsScreen(),
   ];
 
   @override
@@ -71,12 +73,17 @@ class DashboardContent extends StatefulWidget {
 }
 
 class _DashboardContentState extends State<DashboardContent> {
+  // Firebase instances
+  final FirebaseAuth _auth = FirebaseAuth.instance;
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+
   // --- 1. USER DATA VARIABLES ---
   String _userName = "Loading...";
-  String _userEmail = "--";
-  String _deviceId = "Checking...";
-  String _memberSince = "--";
+  String _userEmail = "Loading...";
+  String _deviceId = "N/A";
+  String _memberSince = "Loading...";
   String? _userProfileUrl;
+  bool _isLoadingUser = true;
 
   // --- 2. SENSOR & WEATHER VARIABLES ---
   String _currentCity = "Locating...";
@@ -104,19 +111,122 @@ class _DashboardContentState extends State<DashboardContent> {
     _fetchSensorData();
   }
 
-  // --- 3. FETCH USER DATA ---
+  // --- 3. FETCH USER DATA FROM FIRESTORE ---
   Future<void> _fetchUserData() async {
-    // Simulation delay
-    await Future.delayed(const Duration(seconds: 1)); 
+    try {
+      setState(() => _isLoadingUser = true);
 
-    if (mounted) {
-      setState(() {
-        _userName = "Kirby Gabayno"; 
-        _userEmail = "kirbygabayno@gmail.com";
-        _deviceId = "LD-2024-8X9K"; 
-        _memberSince = "December 2025";
-      });
+      // Get current user from Firebase Auth
+      User? currentUser = _auth.currentUser;
+
+      if (currentUser == null) {
+        if (mounted) {
+          setState(() {
+            _userName = "Guest";
+            _userEmail = "Not logged in";
+            _deviceId = "N/A";
+            _memberSince = "N/A";
+            _isLoadingUser = false;
+          });
+        }
+        return;
+      }
+
+      // Fetch user document from Firestore
+      DocumentSnapshot userDoc = await _firestore
+          .collection('users')
+          .doc(currentUser.uid)
+          .get();
+
+      if (userDoc.exists) {
+        Map<String, dynamic> userData = userDoc.data() as Map<String, dynamic>;
+
+        // Extract data with fallbacks
+        String? displayName = userData['displayName'];
+        String? firstName = userData['firstName'];
+        String? lastName = userData['lastName'];
+        String email = userData['email'] ?? currentUser.email ?? 'No email';
+        String? photoUrl = userData['photoUrl'];
+        Timestamp? createdAt = userData['createdAt'];
+
+        // Build display name: use displayName if available, otherwise firstName + lastName
+        String finalDisplayName;
+        if (displayName != null && displayName.isNotEmpty) {
+          finalDisplayName = displayName;
+        } else if (firstName != null && lastName != null) {
+          finalDisplayName = '$firstName $lastName';
+        } else if (firstName != null) {
+          finalDisplayName = firstName;
+        } else {
+          finalDisplayName = 'User';
+        }
+
+        // Format member since date
+        String memberSince = "N/A";
+        if (createdAt != null) {
+          DateTime date = createdAt.toDate();
+          memberSince = "${_getMonthName(date.month)} ${date.year}";
+        }
+
+        // Device ID - you can customize this logic
+        // For now, using a truncated version of UID
+        String deviceId = "LD-${currentUser.uid.substring(0, 8).toUpperCase()}";
+
+        if (mounted) {
+          setState(() {
+            _userName = finalDisplayName;
+            _userEmail = email;
+            _deviceId = deviceId;
+            _memberSince = memberSince;
+            _userProfileUrl = photoUrl;
+            _isLoadingUser = false;
+          });
+        }
+
+        debugPrint('=== USER DATA FETCHED ===');
+        debugPrint('Display Name: $_userName');
+        debugPrint('Email: $_userEmail');
+        debugPrint('Device ID: $_deviceId');
+        debugPrint('Member Since: $_memberSince');
+        debugPrint('Photo URL: ${_userProfileUrl ?? "No photo"}');
+        debugPrint('========================');
+      } else {
+        // User document doesn't exist
+        if (mounted) {
+          setState(() {
+            _userName = currentUser.displayName ?? 'User';
+            _userEmail = currentUser.email ?? 'No email';
+            _deviceId = "LD-${currentUser.uid.substring(0, 8).toUpperCase()}";
+            _memberSince = "Recently";
+            _userProfileUrl = currentUser.photoURL;
+            _isLoadingUser = false;
+          });
+        }
+        
+        debugPrint('Warning: User document not found in Firestore');
+      }
+    } catch (e) {
+      debugPrint('Error fetching user data: $e');
+      
+      if (mounted) {
+        setState(() {
+          _userName = "Error loading data";
+          _userEmail = "Please try again";
+          _deviceId = "N/A";
+          _memberSince = "N/A";
+          _isLoadingUser = false;
+        });
+      }
     }
+  }
+
+  // Helper to get month name
+  String _getMonthName(int month) {
+    const months = [
+      'January', 'February', 'March', 'April', 'May', 'June',
+      'July', 'August', 'September', 'October', 'November', 'December'
+    ];
+    return months[month - 1];
   }
 
   Future<void> _fetchSensorData() async {
@@ -207,113 +317,123 @@ class _DashboardContentState extends State<DashboardContent> {
               ),
               const Divider(),
               Expanded(
-                child: SingleChildScrollView(
-                  padding: const EdgeInsets.all(24),
-                  child: Column(
-                    children: [
-                      // Profile Picture
-                      Stack(
-                        alignment: Alignment.bottomRight,
-                        children: [
-                          CircleAvatar(
-                            radius: 50,
-                            backgroundColor: Colors.blue.shade100,
-                            backgroundImage: _userProfileUrl != null 
-                                ? NetworkImage(_userProfileUrl!) 
-                                : const AssetImage('assets/user_placeholder.png') as ImageProvider,
-                            child: _userProfileUrl == null ? const Icon(Icons.person, size: 50, color: Colors.blue) : null,
-                          ),
-                          Container(
-                            padding: const EdgeInsets.all(6),
-                            decoration: const BoxDecoration(
-                              color: Colors.white,
-                              shape: BoxShape.circle,
-                              boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 4)],
-                            ),
-                            child: const Icon(Icons.edit, size: 16, color: Colors.grey),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 16),
-                      
-                      // Name & Email
-                      Text(_userName, 
-                          style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
-                      const SizedBox(height: 4),
-                      Text(_userEmail, 
-                          style: TextStyle(fontSize: 14, color: Colors.grey[600])),
-                      
-                      const SizedBox(height: 32),
-
-                      // Account Info Section
-                      Align(
-                        alignment: Alignment.centerLeft,
-                        child: Text("Account Information", 
-                          style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.grey[800])),
-                      ),
-                      const SizedBox(height: 12),
-                      
-                      Container(
-                        padding: const EdgeInsets.all(20),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFF8F9FB),
-                          borderRadius: BorderRadius.circular(20),
-                        ),
+                child: _isLoadingUser
+                    ? const Center(child: CircularProgressIndicator())
+                    : SingleChildScrollView(
+                        padding: const EdgeInsets.all(24),
                         child: Column(
                           children: [
-                            _buildInfoRow(Icons.email_outlined, "EMAIL", _userEmail),
-                            const Divider(height: 30),
-                            _buildInfoRow(Icons.phone_android, "DEVICE ID", _deviceId),
-                            const Divider(height: 30),
-                            _buildInfoRow(Icons.calendar_today_outlined, "MEMBER SINCE", _memberSince),
+                            // Profile Picture
+                            Stack(
+                              alignment: Alignment.bottomRight,
+                              children: [
+                                CircleAvatar(
+                                  radius: 50,
+                                  backgroundColor: Colors.blue.shade100,
+                                  backgroundImage: _userProfileUrl != null 
+                                      ? NetworkImage(_userProfileUrl!) 
+                                      : null,
+                                  child: _userProfileUrl == null 
+                                      ? const Icon(Icons.person, size: 50, color: Colors.blue) 
+                                      : null,
+                                ),
+                                Container(
+                                  padding: const EdgeInsets.all(6),
+                                  decoration: const BoxDecoration(
+                                    color: Colors.white,
+                                    shape: BoxShape.circle,
+                                    boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 4)],
+                                  ),
+                                  child: const Icon(Icons.edit, size: 16, color: Colors.grey),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 16),
+                            
+                            // Name & Email
+                            Text(_userName, 
+                                style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
+                            const SizedBox(height: 4),
+                            Text(_userEmail, 
+                                style: TextStyle(fontSize: 14, color: Colors.grey[600])),
+                            
+                            const SizedBox(height: 32),
+
+                            // Account Info Section
+                            Align(
+                              alignment: Alignment.centerLeft,
+                              child: Text("Account Information", 
+                                style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.grey[800])),
+                            ),
+                            const SizedBox(height: 12),
+                            
+                            Container(
+                              padding: const EdgeInsets.all(20),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFF8F9FB),
+                                borderRadius: BorderRadius.circular(20),
+                              ),
+                              child: Column(
+                                children: [
+                                  _buildInfoRow(Icons.email_outlined, "EMAIL", _userEmail),
+                                  const Divider(height: 30),
+                                  _buildInfoRow(Icons.phone_android, "DEVICE ID", _deviceId),
+                                  const Divider(height: 30),
+                                  _buildInfoRow(Icons.calendar_today_outlined, "MEMBER SINCE", _memberSince),
+                                ],
+                              ),
+                            ),
+
+                            const SizedBox(height: 32),
+
+                            // Edit Profile Button
+                            SizedBox(
+                              width: double.infinity,
+                              height: 50,
+                              child: ElevatedButton(
+                                onPressed: () { 
+                                  Navigator.pop(context); 
+                                  Navigator.push(
+                                    context, 
+                                    MaterialPageRoute(builder: (context) => const EditProfileScreen())
+                                  );
+                                },
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: const Color(0xFF2962FF),
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                ),
+                                child: const Text("EDIT PROFILE", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                              ),
+                            ),
+                            
+                            const SizedBox(height: 12),
+                            
+                            // Sign Out Button
+                            SizedBox(
+                              width: double.infinity,
+                              height: 50,
+                              child: OutlinedButton.icon(
+                                onPressed: () async {
+                                  // Sign out from Firebase
+                                  await _auth.signOut();
+                                  if (mounted) {
+                                    Navigator.pop(context); // Close modal
+                                    // Navigate to login screen
+                                    // Navigator.pushReplacementNamed(context, '/login');
+                                  }
+                                }, 
+                                icon: const Icon(Icons.logout, size: 20, color: Colors.black87),
+                                label: const Text("SIGN OUT", style: TextStyle(color: Colors.black87, fontWeight: FontWeight.bold)),
+                                style: OutlinedButton.styleFrom(
+                                  side: BorderSide(color: Colors.grey.shade300),
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                  backgroundColor: const Color(0xFFF5F6FA),
+                                ),
+                              ),
+                            ),
                           ],
                         ),
                       ),
-
-                      const SizedBox(height: 32),
-
-                      // --- EDIT PROFILE BUTTON (UPDATED) ---
-                      SizedBox(
-                        width: double.infinity,
-                        height: 50,
-                        child: ElevatedButton(
-                          onPressed: () { 
-                            // 1. Close the current modal
-                            Navigator.pop(context); 
-                            // 2. Open the Edit Profile Screen
-                            Navigator.push(
-                              context, 
-                              MaterialPageRoute(builder: (context) => const EditProfileScreen())
-                            );
-                          },
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF2962FF),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                          ),
-                          child: const Text("EDIT PROFILE", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                        ),
-                      ),
-                      
-                      const SizedBox(height: 12),
-                      
-                      // Sign Out Button
-                      SizedBox(
-                        width: double.infinity,
-                        height: 50,
-                        child: OutlinedButton.icon(
-                          onPressed: () { Navigator.pop(context); }, 
-                          icon: const Icon(Icons.logout, size: 20, color: Colors.black87),
-                          label: const Text("SIGN OUT", style: TextStyle(color: Colors.black87, fontWeight: FontWeight.bold)),
-                          style: OutlinedButton.styleFrom(
-                            side: BorderSide(color: Colors.grey.shade300),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                            backgroundColor: const Color(0xFFF5F6FA),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
               ),
             ],
           ),
@@ -331,13 +451,19 @@ class _DashboardContentState extends State<DashboardContent> {
           child: Icon(icon, color: Colors.grey[700], size: 20),
         ),
         const SizedBox(width: 16),
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(label, style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.grey)),
-            const SizedBox(height: 2),
-            Text(value, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Color(0xFF1E2339))),
-          ],
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(label, style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.grey)),
+              const SizedBox(height: 2),
+              Text(
+                value, 
+                style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Color(0xFF1E2339)),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ],
+          ),
         )
       ],
     );
@@ -435,7 +561,7 @@ class _DashboardContentState extends State<DashboardContent> {
                   child: CircleAvatar(
                     radius: 24,
                     backgroundColor: Colors.blue.shade100,
-                    backgroundImage: _userProfileUrl != null ? NetworkImage(_userProfileUrl!) : const AssetImage('assets/user_placeholder.png') as ImageProvider,
+                    backgroundImage: _userProfileUrl != null ? NetworkImage(_userProfileUrl!) : null,
                     child: _userProfileUrl == null ? const Icon(Icons.person, color: Color(0xFF2762EA)) : null,
                   ),
                 ),

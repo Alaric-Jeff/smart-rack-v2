@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:google_sign_in/google_sign_in.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'firebase_options.dart';
@@ -48,103 +50,183 @@ class _LoginPageState extends State<LoginPage> {
   bool _isObscure = true;
   bool _isLoading = false;
 
-  // Firebase Auth instance
+  // Firebase Auth & Firestore
   final FirebaseAuth _auth = FirebaseAuth.instance;
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  
+  // Google Sign In
+  final GoogleSignIn _googleSignIn = GoogleSignIn();
 
-  // API Configuration
+  // API Configuration (only for SSO if needed)
   static const String _baseUrl = 'http://localhost:3000';
+  
+  // Testing Mode - Set to true to skip backend calls during SSO testing
+  static const bool _testingMode = true;
 
+  // ✨ SERVERLESS Manual Login - Direct Firebase Auth
   Future<void> _login() async {
     if (!_formKey.currentState!.validate()) return;
 
     setState(() => _isLoading = true);
 
     try {
-      // Step 1: Call your backend API to get custom token
-      final response = await http.post(
-        Uri.parse('$_baseUrl/user/signin/manual'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'email': _emailController.text.trim(),
-          'password': _passwordController.text,
-        }),
+      // Sign in with Firebase Auth (serverless!)
+      UserCredential userCredential = await _auth.signInWithEmailAndPassword(
+        email: _emailController.text.trim(),
+        password: _passwordController.text,
       );
 
-      if (mounted) {
-        if (response.statusCode == 200) {
-          final responseData = jsonDecode(response.body);
-          
-          if (responseData['success'] == true && responseData['customToken'] != null) {
-            final String customToken = responseData['customToken'];
+      // Optional: Verify user exists in Firestore
+      String uid = userCredential.user!.uid;
+      DocumentSnapshot userDoc = await _firestore.collection('users').doc(uid).get();
 
-            // Step 2: Sign in to Firebase using the custom token
-            try {
-              UserCredential userCredential = await _auth.signInWithCustomToken(customToken);
-              
-              if (mounted) {
-                setState(() => _isLoading = false);
-
-                // Get user info
-                User? user = userCredential.user;
-                
-                // Show success message
-                _showSnackBar('Welcome back!', Colors.green);
-
-                // Navigate to home screen
-                Navigator.pushReplacement(
-                  context,
-                  MaterialPageRoute(builder: (context) => const HomeScreen()),
-                );
-              }
-            } on FirebaseAuthException catch (e) {
-              if (mounted) {
-                setState(() => _isLoading = false);
-                String errorMessage = 'Authentication failed';
-                
-                switch (e.code) {
-                  case 'invalid-custom-token':
-                    errorMessage = 'The token format is incorrect';
-                    break;
-                  case 'custom-token-mismatch':
-                    errorMessage = 'The token is for a different project';
-                    break;
-                  default:
-                    errorMessage = e.message ?? 'Failed to sign in';
-                }
-                _showSnackBar(errorMessage, Colors.red);
-              }
-            }
-          } else {
-            setState(() => _isLoading = false);
-            _showSnackBar('Invalid response from server', Colors.red);
-          }
-        } else {
+      if (!userDoc.exists) {
+        // User authenticated but no Firestore document (shouldn't happen normally)
+        await _auth.signOut();
+        if (mounted) {
           setState(() => _isLoading = false);
-          
-          // Parse error message from backend
-          try {
-            final errorData = jsonDecode(response.body);
-            String errorMessage = errorData['message'] ?? 'Login failed';
-            
-            // Map backend error messages to user-friendly ones
-            if (errorMessage.contains('User does not exist') || 
-                errorMessage.contains('USER_DOES_NOT_EXIST')) {
-              errorMessage = 'No account found with this email';
-            } else if (errorMessage.contains('Incorrect password') || 
-                       errorMessage.contains('INVALID_PASSWORD')) {
-              errorMessage = 'Incorrect password';
-            }
-            
-            _showSnackBar(errorMessage, Colors.red);
-          } catch (e) {
-            _showSnackBar('Login failed. Please try again.', Colors.red);
-          }
+          _showSnackBar('Account data not found. Please contact support.', Colors.red);
         }
+        return;
+      }
+
+      if (mounted) {
+        setState(() => _isLoading = false);
+        _showSnackBar('Welcome back!', Colors.green);
+
+        // Navigate to home screen
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (context) => const HomeScreen()),
+        );
+      }
+    } on FirebaseAuthException catch (e) {
+      if (mounted) {
+        setState(() => _isLoading = false);
+        String errorMessage = 'Login failed';
+
+        // Map Firebase Auth errors to user-friendly messages
+        // (matching your backend logic)
+        switch (e.code) {
+          case 'user-not-found':
+            errorMessage = 'No account found with this email';
+            break;
+          case 'wrong-password':
+            errorMessage = 'Incorrect password';
+            break;
+          case 'invalid-email':
+            errorMessage = 'Invalid email address';
+            break;
+          case 'user-disabled':
+            errorMessage = 'This account has been disabled';
+            break;
+          case 'too-many-requests':
+            errorMessage = 'Too many failed attempts. Please try again later.';
+            break;
+          case 'invalid-credential':
+            errorMessage = 'Invalid email or password';
+            break;
+          default:
+            errorMessage = e.message ?? 'An error occurred during login';
+        }
+        
+        _showSnackBar(errorMessage, Colors.red);
       }
     } catch (e) {
       if (mounted) {
         setState(() => _isLoading = false);
-        _showSnackBar('Network error: Unable to connect to server', Colors.red);
+        _showSnackBar('Network error: Unable to connect', Colors.red);
+      }
+    }
+  }
+
+  // Google SSO Login
+  Future<void> _handleGoogleSignIn() async {
+    setState(() => _isLoading = true);
+
+    try {
+      // Step 1: Sign in with Google
+      final GoogleSignInAccount? googleUser = await _googleSignIn.signIn();
+      
+      if (googleUser == null) {
+        // User canceled the sign-in
+        setState(() => _isLoading = false);
+        return;
+      }
+
+      final GoogleSignInAuthentication googleAuth = await googleUser.authentication;
+
+      // Step 2: Create Firebase credential
+      final credential = GoogleAuthProvider.credential(
+        accessToken: googleAuth.accessToken,
+        idToken: googleAuth.idToken,
+      );
+
+      // Step 3: Sign in to Firebase
+      UserCredential userCredential = await _auth.signInWithCredential(credential);
+      User? user = userCredential.user;
+
+      if (user != null) {
+        // Check if user exists in Firestore
+        DocumentSnapshot userDoc = await _firestore.collection('users').doc(user.uid).get();
+        
+        if (!userDoc.exists) {
+          // User signed in with Google but hasn't signed up yet
+          await _auth.signOut();
+          await _googleSignIn.signOut();
+          
+          if (mounted) {
+            setState(() => _isLoading = false);
+            _showSnackBar('No account found. Please sign up first.', Colors.orange);
+          }
+          return;
+        }
+
+        if (mounted) {
+          setState(() => _isLoading = false);
+          _showSnackBar('Welcome back!', Colors.green);
+          
+          debugPrint('=== GOOGLE SSO LOGIN SUCCESS ===');
+          debugPrint('UUID: ${user.uid}');
+          debugPrint('Display Name: ${user.displayName}');
+          debugPrint('Email: ${user.email}');
+          debugPrint('================================');
+          
+          // Navigate to home screen
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(builder: (context) => const HomeScreen()),
+          );
+        }
+      }
+    } on FirebaseAuthException catch (e) {
+      if (mounted) {
+        setState(() => _isLoading = false);
+        
+        String errorMessage = 'Google sign-in failed';
+        switch (e.code) {
+          case 'account-exists-with-different-credential':
+            errorMessage = 'An account already exists with this email using a different sign-in method';
+            break;
+          case 'invalid-credential':
+            errorMessage = 'Invalid credentials. Please try again.';
+            break;
+          case 'operation-not-allowed':
+            errorMessage = 'Google sign-in is not enabled';
+            break;
+          case 'user-disabled':
+            errorMessage = 'This account has been disabled';
+            break;
+          default:
+            errorMessage = e.message ?? 'Google sign-in failed';
+        }
+        
+        _showSnackBar(errorMessage, Colors.red);
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isLoading = false);
+        _showSnackBar('Error: ${e.toString()}', Colors.red);
       }
     }
   }
@@ -154,7 +236,7 @@ class _LoginPageState extends State<LoginPage> {
       SnackBar(
         content: Text(message),
         backgroundColor: color,
-        duration: const Duration(seconds: 3),
+        duration: const Duration(seconds: 4),
       ),
     );
   }
@@ -326,6 +408,62 @@ class _LoginPageState extends State<LoginPage> {
                                       fontSize: 15,
                                     ),
                                   ),
+                          ),
+                        ),
+
+                        const SizedBox(height: 20),
+
+                        // SSO Divider
+                        Row(
+                          children: [
+                            Expanded(child: Divider(thickness: 0.5, color: Colors.grey[400])),
+                            Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 10),
+                              child: Text('Or continue with',
+                                  style: TextStyle(color: Colors.grey[600], fontSize: 12)),
+                            ),
+                            Expanded(child: Divider(thickness: 0.5, color: Colors.grey[400])),
+                          ],
+                        ),
+                        
+                        const SizedBox(height: 15),
+
+                        // Google Sign In Button
+                        SizedBox(
+                          width: double.infinity,
+                          height: 48,
+                          child: OutlinedButton(
+                            onPressed: _isLoading ? null : _handleGoogleSignIn,
+                            style: OutlinedButton.styleFrom(
+                              side: BorderSide(color: Colors.grey.shade300),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              backgroundColor: Colors.white,
+                            ),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Image.asset(
+                                  'assets/google.png',
+                                  height: 24,
+                                  errorBuilder: (ctx, err, stack) => const Icon(
+                                    Icons.g_mobiledata,
+                                    size: 24,
+                                    color: Color(0xFF2762EA),
+                                  ),
+                                ),
+                                const SizedBox(width: 12),
+                                const Text(
+                                  'Sign in with Google',
+                                  style: TextStyle(
+                                    color: Colors.black87,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 15,
+                                  ),
+                                ),
+                              ],
+                            ),
                           ),
                         ),
 

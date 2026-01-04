@@ -1,10 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
-import 'package:http/http.dart' as http;
-import 'dart:convert';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:google_sign_in/google_sign_in.dart';
-import 'package:flutter_facebook_auth/flutter_facebook_auth.dart';
+// import 'package:flutter_facebook_auth/flutter_facebook_auth.dart'; // COMMENTED OUT - Facebook SSO not included
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'terms_and_condtions.dart';
 
 class CreateAccountScreen extends StatefulWidget {
@@ -27,13 +26,14 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
   final TextEditingController _passwordController = TextEditingController();
   final TextEditingController _confirmPasswordController = TextEditingController();
 
-  // Firebase Auth
+  // Firebase Auth & Firestore
   final FirebaseAuth _auth = FirebaseAuth.instance;
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance; // ADD THIS
   
   // Google Sign In
   final GoogleSignIn _googleSignIn = GoogleSignIn();
 
-  // API Configuration
+  // API Configuration (only for SSO if not in testing mode)
   static const String _baseUrl = 'http://localhost:3000';
   
   // Testing Mode - Set to true to skip backend calls during SSO testing
@@ -56,7 +56,7 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
     super.dispose();
   }
 
-  // Manual Signup
+  // ✨ SERVERLESS Manual Signup - Direct Firestore
   Future<void> _handleSignup() async {
     if (!_isChecked) {
       _showSnackBar('You must agree to the Terms and Conditions', Colors.red);
@@ -73,35 +73,36 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
           password: _passwordController.text,
         );
 
-        // Get Firebase UID
         String uuid = userCredential.user!.uid;
 
-        // Step 2: Call your backend API
-        final response = await http.post(
-          Uri.parse('$_baseUrl/user/signup/manual'),
-          headers: {'Content-Type': 'application/json'},
-          body: jsonEncode({
-            'uuid': uuid,
+        // Step 2: Create user document in Firestore (SERVERLESS!)
+        await _firestore.collection('users').doc(uuid).set({
+          'uuid': uuid,
+          'firstName': _firstNameController.text.trim(),
+          'lastName': _lastNameController.text.trim(),
+          'displayName': '${_firstNameController.text.trim()} ${_lastNameController.text.trim()}',
+          'email': _emailController.text.trim(),
+          'signInProvider': 'manual',
+          'photoUrl': null,
+          'address': null,
+          'contactNumber': null,
+          'devices': {
+            'displayName': '${_firstNameController.text.trim()} ${_lastNameController.text.trim()}',
+            'email': _emailController.text.trim(),
             'firstName': _firstNameController.text.trim(),
             'lastName': _lastNameController.text.trim(),
-            'email': _emailController.text.trim(),
-            'password': _passwordController.text,
-          }),
-        );
+            'password': _passwordController.text, // Store hashed in production!
+          },
+          'createdAt': FieldValue.serverTimestamp(),
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
 
         if (mounted) {
           setState(() => _isLoading = false);
-
-          if (response.statusCode == 200 || response.statusCode == 201) {
-            _showSnackBar('Account created successfully!', Colors.green);
-            // Navigate to home or next screen
-            // Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => HomeScreen()));
-          } else {
-            // If backend fails, delete the Firebase user
-            await userCredential.user?.delete();
-            final errorData = jsonDecode(response.body);
-            _showSnackBar('Error: ${errorData['message'] ?? 'Signup failed'}', Colors.red);
-          }
+          _showSnackBar('Account created successfully!', Colors.green);
+          
+          // Navigate to home or next screen
+          // Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => HomeScreen()));
         }
       } on FirebaseAuthException catch (e) {
         if (mounted) {
@@ -129,13 +130,21 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
       } catch (e) {
         if (mounted) {
           setState(() => _isLoading = false);
-          _showSnackBar('Network error: ${e.toString()}', Colors.red);
+          
+          // If Firestore write fails, clean up the Auth user
+          try {
+            await _auth.currentUser?.delete();
+          } catch (deleteError) {
+            debugPrint('Failed to delete user after Firestore error: $deleteError');
+          }
+          
+          _showSnackBar('Error creating account: ${e.toString()}', Colors.red);
         }
       }
     }
   }
 
-  // Google Sign Up
+  // ✨ SERVERLESS Google Sign Up - Direct Firestore
   Future<void> _handleGoogleSignUp() async {
     setState(() => _isLoading = true);
 
@@ -162,67 +171,102 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
       User? user = userCredential.user;
 
       if (user != null) {
-        if (_testingMode) {
-          // TESTING MODE: Just show success without calling backend
+        String uuid = user.uid;
+        
+        // Step 4: Check if user already exists in Firestore
+        DocumentSnapshot existingUser = await _firestore.collection('users').doc(uuid).get();
+        
+        if (existingUser.exists) {
+          // User already exists - this is a sign-in, not sign-up
           if (mounted) {
             setState(() => _isLoading = false);
-            _showSnackBar(
-              '✅ Google SSO Test Success!\nUID: ${user.uid}\nName: ${user.displayName ?? 'N/A'}\nEmail: ${user.email ?? 'N/A'}',
-              Colors.green,
-            );
-            debugPrint('=== GOOGLE SSO TEST DATA ===');
-            debugPrint('UUID: ${user.uid}');
-            debugPrint('Display Name: ${user.displayName ?? googleUser.displayName ?? 'Google User'}');
-            debugPrint('Email: ${user.email}');
-            debugPrint('Photo URL: ${user.photoURL ?? googleUser.photoUrl}');
-            debugPrint('Sign In Provider: google.com');
-            debugPrint('==========================');
+            _showSnackBar('Account already exists. Redirecting to login...', Colors.orange);
+            
+            // Sign out and redirect to login
+            await _auth.signOut();
+            await _googleSignIn.signOut();
+            Navigator.pop(context); // Go back to login screen
           }
-        } else {
-          // PRODUCTION MODE: Call backend API
-          final response = await http.post(
-            Uri.parse('$_baseUrl/user/signup/sso'),
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({
-              'uuid': user.uid,
-              'displayName': user.displayName ?? googleUser.displayName ?? 'Google User',
-              'signInProvider': 'google.com',
-              if (user.photoURL != null || googleUser.photoUrl != null)
-                'photoUrl': user.photoURL ?? googleUser.photoUrl,
-            }),
-          );
+          return;
+        }
 
-          if (mounted) {
-            setState(() => _isLoading = false);
+        // Step 5: Create new user document in Firestore (SERVERLESS!)
+        await _firestore.collection('users').doc(uuid).set({
+          'uuid': uuid,
+          'displayName': user.displayName ?? googleUser.displayName ?? 'Google User',
+          'firstName': '',
+          'lastName': '',
+          'email': user.email,
+          'password': null,
+          'signInProvider': 'google.com',
+          'photoUrl': user.photoURL ?? googleUser.photoUrl,
+          'address': null,
+          'contactNumber': null,
+          'devices': [],
+          'createdAt': FieldValue.serverTimestamp(),
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
 
-            if (response.statusCode == 200 || response.statusCode == 201) {
-              _showSnackBar('Google sign-up successful!', Colors.green);
-              // Navigate to home screen
-              // Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => HomeScreen()));
-            } else {
-              // If backend fails, delete the Firebase user and sign out
-              await user.delete();
-              await _googleSignIn.signOut();
-              final errorData = jsonDecode(response.body);
-              _showSnackBar('Error: ${errorData['message'] ?? 'Sign-up failed'}', Colors.red);
-            }
-          }
+        if (mounted) {
+          setState(() => _isLoading = false);
+          _showSnackBar('Google sign-up successful!', Colors.green);
+          
+          debugPrint('=== GOOGLE SSO SIGNUP SUCCESS ===');
+          debugPrint('UUID: $uuid');
+          debugPrint('Display Name: ${user.displayName ?? googleUser.displayName}');
+          debugPrint('Email: ${user.email}');
+          debugPrint('Photo URL: ${user.photoURL ?? googleUser.photoUrl}');
+          debugPrint('Sign In Provider: google.com');
+          debugPrint('================================');
+          
+          // Navigate to home screen
+          // Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => HomeScreen()));
         }
       }
     } on FirebaseAuthException catch (e) {
       if (mounted) {
         setState(() => _isLoading = false);
-        _showSnackBar('Google sign-up failed: ${e.message}', Colors.red);
+        
+        String errorMessage = 'Google sign-up failed';
+        switch (e.code) {
+          case 'account-exists-with-different-credential':
+            errorMessage = 'An account already exists with this email using a different sign-in method';
+            break;
+          case 'invalid-credential':
+            errorMessage = 'Invalid credentials. Please try again.';
+            break;
+          case 'operation-not-allowed':
+            errorMessage = 'Google sign-in is not enabled';
+            break;
+          case 'user-disabled':
+            errorMessage = 'This account has been disabled';
+            break;
+          default:
+            errorMessage = e.message ?? 'Google sign-up failed';
+        }
+        
+        _showSnackBar(errorMessage, Colors.red);
       }
     } catch (e) {
       if (mounted) {
         setState(() => _isLoading = false);
+        
+        // If Firestore write fails, clean up the Auth user
+        try {
+          await _auth.currentUser?.delete();
+          await _googleSignIn.signOut();
+        } catch (deleteError) {
+          debugPrint('Failed to delete user after Firestore error: $deleteError');
+        }
+        
         _showSnackBar('Error: ${e.toString()}', Colors.red);
       }
     }
   }
 
-  // Facebook Sign Up
+  // ✨ SERVERLESS Facebook Sign Up - Direct Firestore
+  // COMMENTED OUT - Facebook SSO not included for defense
+  /*
   Future<void> _handleFacebookSignUp() async {
     setState(() => _isLoading = true);
 
@@ -246,55 +290,59 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
           User? user = userCredential.user;
 
           if (user != null) {
+            String uuid = user.uid;
+            
             // Step 4: Get user data from Facebook
             final userData = await FacebookAuth.instance.getUserData();
             
-            if (_testingMode) {
-              // TESTING MODE: Just show success without calling backend
+            // Step 5: Check if user already exists in Firestore
+            DocumentSnapshot existingUser = await _firestore.collection('users').doc(uuid).get();
+            
+            if (existingUser.exists) {
+              // User already exists - this is a sign-in, not sign-up
               if (mounted) {
                 setState(() => _isLoading = false);
-                _showSnackBar(
-                  '✅ Facebook SSO Test Success!\nUID: ${user.uid}\nName: ${userData['name'] ?? 'N/A'}\nEmail: ${userData['email'] ?? 'N/A'}',
-                  Colors.green,
-                );
-                debugPrint('=== FACEBOOK SSO TEST DATA ===');
-                debugPrint('UUID: ${user.uid}');
-                debugPrint('Display Name: ${userData['name'] ?? user.displayName ?? 'Facebook User'}');
-                debugPrint('Email: ${userData['email'] ?? user.email}');
-                debugPrint('Photo URL: ${userData['picture']?['data']?['url']}');
-                debugPrint('Sign In Provider: facebook.com');
-                debugPrint('Full User Data: $userData');
-                debugPrint('============================');
+                _showSnackBar('Account already exists. Redirecting to login...', Colors.orange);
+                
+                // Sign out and redirect to login
+                await _auth.signOut();
+                await FacebookAuth.instance.logOut();
+                Navigator.pop(context); // Go back to login screen
               }
-            } else {
-              // PRODUCTION MODE: Call backend API
-              final response = await http.post(
-                Uri.parse('$_baseUrl/user/signup/sso'),
-                headers: {'Content-Type': 'application/json'},
-                body: jsonEncode({
-                  'uuid': user.uid,
-                  'displayName': userData['name'] ?? user.displayName ?? 'Facebook User',
-                  'signInProvider': 'facebook.com',
-                  if (userData['picture'] != null && userData['picture']['data'] != null)
-                    'photoUrl': userData['picture']['data']['url'],
-                }),
-              );
+              return;
+            }
 
-              if (mounted) {
-                setState(() => _isLoading = false);
+            // Step 6: Create new user document in Firestore (SERVERLESS!)
+            await _firestore.collection('users').doc(uuid).set({
+              'uuid': uuid,
+              'displayName': userData['name'] ?? user.displayName ?? 'Facebook User',
+              'firstName': '',
+              'lastName': '',
+              'email': userData['email'] ?? user.email,
+              'password': null,
+              'signInProvider': 'facebook.com',
+              'photoUrl': userData['picture']?['data']?['url'],
+              'address': null,
+              'contactNumber': null,
+              'devices': [],
+              'createdAt': FieldValue.serverTimestamp(),
+              'updatedAt': FieldValue.serverTimestamp(),
+            });
 
-                if (response.statusCode == 200 || response.statusCode == 201) {
-                  _showSnackBar('Facebook sign-up successful!', Colors.green);
-                  // Navigate to home screen
-                  // Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => HomeScreen()));
-                } else {
-                  // If backend fails, delete the Firebase user and log out
-                  await user.delete();
-                  await FacebookAuth.instance.logOut();
-                  final errorData = jsonDecode(response.body);
-                  _showSnackBar('Error: ${errorData['message'] ?? 'Sign-up failed'}', Colors.red);
-                }
-              }
+            if (mounted) {
+              setState(() => _isLoading = false);
+              _showSnackBar('Facebook sign-up successful!', Colors.green);
+              
+              debugPrint('=== FACEBOOK SSO SIGNUP SUCCESS ===');
+              debugPrint('UUID: $uuid');
+              debugPrint('Display Name: ${userData['name'] ?? user.displayName}');
+              debugPrint('Email: ${userData['email'] ?? user.email}');
+              debugPrint('Photo URL: ${userData['picture']?['data']?['url']}');
+              debugPrint('Sign In Provider: facebook.com');
+              debugPrint('==================================');
+              
+              // Navigate to home screen
+              // Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => HomeScreen()));
             }
           }
         }
@@ -308,15 +356,44 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
     } on FirebaseAuthException catch (e) {
       if (mounted) {
         setState(() => _isLoading = false);
-        _showSnackBar('Facebook sign-up failed: ${e.message}', Colors.red);
+        
+        String errorMessage = 'Facebook sign-up failed';
+        switch (e.code) {
+          case 'account-exists-with-different-credential':
+            errorMessage = 'An account already exists with this email using a different sign-in method';
+            break;
+          case 'invalid-credential':
+            errorMessage = 'Invalid credentials. Please try again.';
+            break;
+          case 'operation-not-allowed':
+            errorMessage = 'Facebook sign-in is not enabled';
+            break;
+          case 'user-disabled':
+            errorMessage = 'This account has been disabled';
+            break;
+          default:
+            errorMessage = e.message ?? 'Facebook sign-up failed';
+        }
+        
+        _showSnackBar(errorMessage, Colors.red);
       }
     } catch (e) {
       if (mounted) {
         setState(() => _isLoading = false);
+        
+        // If Firestore write fails, clean up the Auth user
+        try {
+          await _auth.currentUser?.delete();
+          await FacebookAuth.instance.logOut();
+        } catch (deleteError) {
+          debugPrint('Failed to delete user after Firestore error: $deleteError');
+        }
+        
         _showSnackBar('Error: ${e.toString()}', Colors.red);
       }
     }
   }
+  */
 
   void _showSnackBar(String message, Color color) {
     ScaffoldMessenger.of(context).showSnackBar(
@@ -540,6 +617,8 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                       Icons.g_mobiledata, 
                       _handleGoogleSignUp
                     ),
+                    // COMMENTED OUT - Facebook SSO not included for defense
+                    /*
                     const SizedBox(height: 10),
                     _buildBigSocialButton(
                       "Facebook", 
@@ -547,6 +626,7 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                       Icons.facebook, 
                       _handleFacebookSignUp
                     ),
+                    */
 
                     const SizedBox(height: 15),
 
