@@ -131,7 +131,7 @@ class HelpSupportScreen extends StatelessWidget {
                     Container(
                       width: 20, height: 20,
                       alignment: Alignment.center,
-                      decoration: BoxDecoration(color: const Color(0xFF1E2339), shape: BoxShape.circle),
+                      decoration: const BoxDecoration(color: Color(0xFF1E2339), shape: BoxShape.circle),
                       child: Text(number, style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
                     ),
                     const SizedBox(width: 8),
