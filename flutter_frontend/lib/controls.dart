@@ -181,7 +181,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       // --- 2. Fan Timer Selection ---
-                      const Text("Fan Timer", style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
+                      const Text("Timer", style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
                       const SizedBox(height: 12),
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -196,7 +196,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
                       const SizedBox(height: 24),
 
                       // --- 3. Fan Mode Selection ---
-                      const Text("Fan Mode", style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
+                      const Text("Modes", style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
                       const SizedBox(height: 12),
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,

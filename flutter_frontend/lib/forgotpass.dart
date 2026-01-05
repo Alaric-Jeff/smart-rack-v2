@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart'; // Import Firebase
 
 class ForgotPasswordScreen extends StatefulWidget {
   const ForgotPasswordScreen({super.key});
@@ -10,11 +11,15 @@ class ForgotPasswordScreen extends StatefulWidget {
 class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
   final _formKey = GlobalKey<FormState>();
   final TextEditingController _emailController = TextEditingController();
+  
+  // Create the Firebase Auth instance
+  final FirebaseAuth _auth = FirebaseAuth.instance;
+  
   bool _isLoading = false;
 
   // Colors to match your theme
   final Color _backgroundColor = const Color(0xFFF5F5F5);
-  final Color _primaryColor = const Color(0xFF2762EA);
+  final Color _primaryColor = const Color(0xFF2962FF); // Updated to your Blue
   final Color _textColor = const Color(0xFF1E2339);
   final Color _labelColor = const Color(0xFF5A6175);
 
@@ -24,27 +29,75 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
     super.dispose();
   }
 
-  // --- Backend Logic Simulation ---
+  // --- REAL BACKEND LOGIC ---
   Future<void> _handleResetPassword() async {
+    // 1. Validate the text field
     if (_formKey.currentState!.validate()) {
       setState(() => _isLoading = true);
 
-      // TODO: BACKEND - Add your Firebase Password Reset logic here
-      // Example: await FirebaseAuth.instance.sendPasswordResetEmail(email: _emailController.text.trim());
-      
-      // Simulating network delay
-      await Future.delayed(const Duration(seconds: 2));
+      try {
+        // 2. Send the official Firebase Reset Link
+        await _auth.sendPasswordResetEmail(email: _emailController.text.trim());
 
-      if (mounted) {
-        setState(() => _isLoading = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Reset link sent to your email!'),
-            backgroundColor: Colors.green,
-          ),
-        );
-        // Optional: Navigate back to login after success
-        // Navigator.pop(context);
+        if (mounted) {
+          // 3. Show Success Dialog
+          // We use a Dialog instead of a SnackBar so the user stops 
+          // and reads the instruction to check their email.
+          showDialog(
+            context: context,
+            builder: (context) => AlertDialog(
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+              title: const Text("Check Your Email", style: TextStyle(fontWeight: FontWeight.bold)),
+              content: Text(
+                "We have sent a secure password reset link to:\n${_emailController.text}\n\nPlease check your inbox (and spam folder) and click the link to create a new password.",
+                style: const TextStyle(fontSize: 14),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () {
+                    Navigator.pop(context); // Close dialog
+                    Navigator.pop(context); // Go back to login screen
+                  },
+                  child: Text("OK", style: TextStyle(color: _primaryColor, fontWeight: FontWeight.bold)),
+                ),
+              ],
+            ),
+          );
+        }
+      } on FirebaseAuthException catch (e) {
+        // 4. Handle Specific Firebase Errors
+        String errorMessage = "An error occurred. Please try again.";
+        
+        if (e.code == 'user-not-found') {
+          errorMessage = "No registered user found with this email.";
+        } else if (e.code == 'invalid-email') {
+          errorMessage = "The email address is not valid.";
+        }
+
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(errorMessage),
+              backgroundColor: Colors.red,
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        }
+      } catch (e) {
+        // Handle generic errors
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text("Error: ${e.toString()}"),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+      } finally {
+        // Stop loading spinner
+        if (mounted) {
+          setState(() => _isLoading = false);
+        }
       }
     }
   }
@@ -62,7 +115,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
           // 2. RESPONSIVE: Dynamic padding based on device width
           padding: EdgeInsets.symmetric(horizontal: screenWidth * 0.08, vertical: 20),
           child: ConstrainedBox(
-            // 3. TABLET/WIDE PHONE SUPPORT: Limits the width so it doesn't look stretched
+            // 3. TABLET/WIDE PHONE SUPPORT: Limits the width
             constraints: const BoxConstraints(maxWidth: 400),
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
@@ -151,6 +204,10 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
                               borderRadius: BorderRadius.circular(12),
                               borderSide: const BorderSide(color: Colors.red),
                             ),
+                            focusedErrorBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(12),
+                                borderSide: const BorderSide(color: Colors.red, width: 2)
+                            ),
                           ),
                           validator: (value) {
                             if (value == null || value.isEmpty) return 'Please enter your email';
@@ -173,9 +230,14 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
                                 borderRadius: BorderRadius.circular(12),
                               ),
                               elevation: 0,
+                              disabledBackgroundColor: _primaryColor.withOpacity(0.6),
                             ),
                             child: _isLoading
-                                ? const CircularProgressIndicator(color: Colors.white)
+                                ? const SizedBox(
+                                    height: 24,
+                                    width: 24,
+                                    child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2.5),
+                                  )
                                 : const Text(
                                     'SEND RESET LINK',
                                     style: TextStyle(

@@ -560,7 +560,7 @@ class _DashboardContentState extends State<DashboardContent> {
                   children: [
                     Text("My Laundry", style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
                     SizedBox(height: 4),
-                    Text("System Active • Auto Mode", style: TextStyle(fontSize: 14, color: Color(0xFF5A6175), fontWeight: FontWeight.w500)),
+                    Text("System Dashboard", style: TextStyle(fontSize: 14, color: Color(0xFF5A6175), fontWeight: FontWeight.w500)),
                   ],
                 ),
                 GestureDetector(
