@@ -58,53 +58,48 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
 
   // ✨ SERVERLESS Manual Signup - Direct Firestore
   Future<void> _handleSignup() async {
-    if (!_isChecked) {
-      _showSnackBar('You must agree to the Terms and Conditions', Colors.red);
-      return;
-    }
+  if (!_isChecked) {
+    _showSnackBar('You must agree to the Terms and Conditions', Colors.red);
+    return;
+  }
 
-    if (_formKey.currentState!.validate()) {
-      setState(() => _isLoading = true);
+  if (_formKey.currentState!.validate()) {
+    setState(() => _isLoading = true);
 
-      try {
-        // Step 1: Create Firebase Auth user
-        UserCredential userCredential = await _auth.createUserWithEmailAndPassword(
-          email: _emailController.text.trim(),
-          password: _passwordController.text,
-        );
+    try {
+      // Step 1: Create Firebase Auth user
+      UserCredential userCredential = await _auth.createUserWithEmailAndPassword(
+        email: _emailController.text.trim(),
+        password: _passwordController.text,
+      );
 
-        String uuid = userCredential.user!.uid;
+      String uuid = userCredential.user!.uid;
 
-        // Step 2: Create user document in Firestore (SERVERLESS!)
-        await _firestore.collection('users').doc(uuid).set({
-          'uuid': uuid,
-          'firstName': _firstNameController.text.trim(),
-          'lastName': _lastNameController.text.trim(),
-          'displayName': '${_firstNameController.text.trim()} ${_lastNameController.text.trim()}',
-          'email': _emailController.text.trim(),
-          'signInProvider': 'manual',
-          'photoUrl': null,
-          'address': null,
-          'contactNumber': null,
-          'devices': {
-            'displayName': '${_firstNameController.text.trim()} ${_lastNameController.text.trim()}',
-            'email': _emailController.text.trim(),
-            'firstName': _firstNameController.text.trim(),
-            'lastName': _lastNameController.text.trim(),
-            'password': _passwordController.text, // Store hashed in production!
-          },
-          'createdAt': FieldValue.serverTimestamp(),
-          'updatedAt': FieldValue.serverTimestamp(),
-        });
+      // Step 2: Create user document in Firestore (SERVERLESS!)
+      await _firestore.collection('users').doc(uuid).set({
+        'uuid': uuid,
+        'firstName': _firstNameController.text.trim(),
+        'lastName': _lastNameController.text.trim(),
+        'displayName': '${_firstNameController.text.trim()} ${_lastNameController.text.trim()}',
+        'email': _emailController.text.trim(),
+        'password': _passwordController.text, // Store hashed in production!
+        'signInProvider': 'manual',
+        'photoUrl': null,
+        'address': null,
+        'contactNumber': null,
+        'devices': [], // Empty array for paired devices
+        'createdAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
 
-        if (mounted) {
-          setState(() => _isLoading = false);
-          _showSnackBar('Account created successfully!', Colors.green);
-          
-          // Navigate to home or next screen
-          // Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => HomeScreen()));
-        }
-      } on FirebaseAuthException catch (e) {
+      if (mounted) {
+        setState(() => _isLoading = false);
+        _showSnackBar('Account created successfully!', Colors.green);
+        
+        // Navigate to home or next screen
+        // Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => HomeScreen()));
+      }
+    }  on FirebaseAuthException catch (e) {
         if (mounted) {
           setState(() => _isLoading = false);
           String errorMessage = 'An error occurred';
