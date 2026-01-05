@@ -2,10 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:google_sign_in/google_sign_in.dart';
-import 'terms_and_condtions.dart'; // Make sure this matches your actual file name!
-import 'edit_profile.dart'; // Ensure this import is present
-import 'device_pairing.dart'; // <--- IMPORT ADDED for the new screen
-import 'main.dart'; // Import LoginPage
+import 'package:shared_preferences/shared_preferences.dart';
+
+import 'terms_and_condtions.dart'; 
+import 'edit_profile.dart'; 
+import 'device_pairing.dart'; 
+import 'main.dart'; 
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -16,17 +18,17 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   // --- STATE VARIABLES ---
-  bool _autoRetract = true; 
-  bool _safetyLock = true;
+  bool _autoRetract = false; 
+  bool _safetyLock = false;
   bool _notificationsEnabled = true; 
-  double _rainSensitivity = 50;
+  double _rainSensitivity = 0.0;     
   
   // Firebase instances
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final GoogleSignIn _googleSignIn = GoogleSignIn();
   
-  // User Data (For the Modal)
+  // User Data 
   String _userName = "Loading..."; 
   String _userEmail = "Loading...";
   String _deviceId = "Loading..."; 
@@ -37,13 +39,43 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   void initState() {
     super.initState();
-    _fetchUserData(showLoading: true); // Show loading on initial load
+    _loadPreferences(); 
+    _fetchUserData(showLoading: true); 
   }
 
-  // --- FETCH USER DATA FROM FIRESTORE ---
+  // --- LOAD SETTINGS ---
+  Future<void> _loadPreferences() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (!mounted) return;
+      
+      setState(() {
+        _autoRetract = prefs.getBool('auto_retract') ?? false;
+        _safetyLock = prefs.getBool('safety_lock') ?? false;
+        _notificationsEnabled = prefs.getBool('notifications') ?? true;
+        _rainSensitivity = prefs.getDouble('rain_sensitivity') ?? 0.0;
+      });
+    } catch (e) {
+      debugPrint("Error loading settings: $e");
+    }
+  }
+
+  // --- HELPER: INITIALS ---
+  String _getInitials(String name) {
+    if (name.isEmpty || name == "Loading...") return "";
+    List<String> nameParts = name.trim().split(RegExp(r'\s+')); 
+    if (nameParts.isEmpty) return "U";
+    
+    String first = nameParts[0].isNotEmpty ? nameParts[0][0] : "";
+    String last = nameParts.length > 1 && nameParts[1].isNotEmpty ? nameParts[1][0] : "";
+    
+    String initials = (first + last).toUpperCase();
+    return initials.isEmpty ? "U" : initials;
+  }
+
+  // --- FETCH USER DATA ---
   Future<void> _fetchUserData({bool showLoading = false}) async {
     try {
-      // Only show loading if explicitly requested (initial load) or if we don't have data yet
       final bool shouldShowLoading = showLoading || _userName == "Loading...";
       if (shouldShowLoading) {
         setState(() => _isLoadingUserData = true);
@@ -67,8 +99,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
       if (userDoc.exists) {
         final data = userDoc.data()!;
-
-        // Extract data with fallbacks
         String? displayName = data['displayName'];
         String? firstName = data['firstName'];
         String? lastName = data['lastName'];
@@ -76,7 +106,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
         String? photoUrl = data['photoUrl'];
         Timestamp? createdAt = data['createdAt'];
 
-        // Build display name: use displayName if available, otherwise firstName + lastName
         String finalDisplayName;
         if (displayName != null && displayName.isNotEmpty) {
           finalDisplayName = displayName;
@@ -88,14 +117,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
           finalDisplayName = user.displayName ?? 'User';
         }
 
-        // Format member since date
         String memberSince = "Recently";
         if (createdAt != null) {
           DateTime date = createdAt.toDate();
           memberSince = "${_getMonthName(date.month)} ${date.year}";
         }
 
-        // Device ID - using truncated version of UID
         String deviceId = "LD-${user.uid.substring(0, 8).toUpperCase()}";
 
         if (mounted) {
@@ -108,16 +135,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             _isLoadingUserData = false;
           });
         }
-
-        debugPrint('=== USER DATA FETCHED ===');
-        debugPrint('Display Name: $_userName');
-        debugPrint('Email: $_userEmail');
-        debugPrint('Device ID: $_deviceId');
-        debugPrint('Member Since: $_memberSince');
-        debugPrint('Photo URL: ${_userProfileUrl ?? "No photo"}');
-        debugPrint('========================');
       } else {
-        // User document doesn't exist, use Auth data
         if (mounted) {
           setState(() {
             _userName = user.displayName ?? 'User';
@@ -128,25 +146,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
             _isLoadingUserData = false;
           });
         }
-        
-        debugPrint('Warning: User document not found in Firestore');
       }
     } catch (e) {
-      debugPrint('Error fetching user data: $e');
-      
       if (mounted) {
         setState(() {
-          _userName = "Error loading data";
-          _userEmail = "Please try again";
+          _userName = "Error";
+          _userEmail = "Retry later";
           _deviceId = "N/A";
-          _memberSince = "N/A";
           _isLoadingUserData = false;
         });
       }
     }
   }
 
-  // Helper to get month name
   String _getMonthName(int month) {
     const months = [
       'January', 'February', 'March', 'April', 'May', 'June',
@@ -155,26 +167,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
     return months[month - 1];
   }
 
-  // --- SIGN OUT FUNCTION ---
+  // --- SIGN OUT ---
   Future<void> _signOut() async {
     try {
-      // Show confirmation dialog
       final shouldSignOut = await showDialog<bool>(
         context: context,
         builder: (context) => AlertDialog(
-          title: const Text(
-            "Sign Out?",
-            style: TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF1E2339)),
-          ),
+          title: const Text("Sign Out?", style: TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
           content: const Text("Are you sure you want to sign out?"),
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context, false),
-              child: const Text(
-                "CANCEL",
-                style: TextStyle(color: Colors.grey),
-              ),
+              child: const Text("CANCEL", style: TextStyle(color: Colors.grey)),
             ),
             ElevatedButton(
               onPressed: () => Navigator.pop(context, true),
@@ -182,10 +187,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 backgroundColor: const Color(0xFF2962FF),
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
               ),
-              child: const Text(
-                "SIGN OUT",
-                style: TextStyle(color: Colors.white),
-              ),
+              child: const Text("SIGN OUT", style: TextStyle(color: Colors.white)),
             ),
           ],
         ),
@@ -193,41 +195,77 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
       if (shouldSignOut != true) return;
 
-      // Sign out from Google Sign In (if signed in with Google)
       await _googleSignIn.signOut();
-
-      // Sign out from Firebase Auth (destroys ID token)
       await _auth.signOut();
 
       if (mounted) {
-        // Navigate to login screen and clear navigation stack
         Navigator.of(context).pushAndRemoveUntil(
           MaterialPageRoute(builder: (context) => const LoginPage()),
-          (route) => false, // Remove all previous routes
+          (route) => false, 
         );
       }
     } catch (e) {
-      debugPrint('Error signing out: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error signing out: ${e.toString()}'),
-            backgroundColor: Colors.red,
-          ),
+          SnackBar(content: Text('Error signing out: ${e.toString()}'), backgroundColor: Colors.red),
         );
       }
     }
   }
 
-  // --- LOGIC: UPDATE SETTINGS ---
+  // --- FIXED: UPDATE SETTING (Updates UI Immediately) ---
   Future<void> _updateSetting(String key, dynamic value) async {
+    // 1. Update the Screen IMMEDIATELY so the button moves
     setState(() {
       if (key == 'auto_retract') _autoRetract = value;
       if (key == 'safety_lock') _safetyLock = value;
       if (key == 'notifications') _notificationsEnabled = value;
       if (key == 'rain_sensitivity') _rainSensitivity = value;
     });
-    debugPrint("Setting Updated -> $key: $value");
+
+    // 2. Save to Phone Storage (Background)
+    // We do this AFTER updating the UI so it doesn't freeze the button
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (key == 'auto_retract') await prefs.setBool('auto_retract', value);
+      if (key == 'safety_lock') await prefs.setBool('safety_lock', value);
+      if (key == 'notifications') await prefs.setBool('notifications', value);
+      if (key == 'rain_sensitivity') await prefs.setDouble('rain_sensitivity', value);
+    } catch (e) {
+      debugPrint("Error saving setting: $e");
+    }
+  }
+
+  // --- CONFIRMATION MODAL ---
+  void _showConfirmation(String title, bool newValue, VoidCallback onConfirm) {
+    showDialog(
+      context: context,
+      barrierDismissible: false, // Prevent clicking outside to close
+      builder: (context) {
+        return AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: Text("Change $title?", style: const TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
+          content: Text("Are you sure you want to turn ${newValue ? 'ON' : 'OFF'} $title?"),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context), // Just close, do nothing
+              child: const Text("CANCEL", style: TextStyle(color: Colors.grey)),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.pop(context); // 1. Close the dialog
+                onConfirm(); // 2. Perform the update
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF2962FF),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+              child: const Text("CONFIRM", style: TextStyle(color: Colors.white)),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   // --- MODAL: DEVICE INFO ---
@@ -263,7 +301,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   // --- MODAL: ACCOUNT ---
   void _showAccountModal() {
-    // Refresh user data in background (don't show loading if we already have data)
     _fetchUserData(showLoading: false);
     
     showModalBottomSheet(
@@ -302,12 +339,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               children: [
                                 CircleAvatar(
                                   radius: 50,
-                                  backgroundColor: Colors.blue.shade100,
+                                  backgroundColor: const Color(0xFF2962FF), 
                                   backgroundImage: _userProfileUrl != null && _userProfileUrl!.isNotEmpty
                                       ? NetworkImage(_userProfileUrl!)
                                       : null,
                                   child: _userProfileUrl == null || _userProfileUrl!.isEmpty
-                                      ? const Icon(Icons.person, size: 50, color: Colors.blue)
+                                      ? Text(
+                                          _getInitials(_userName),
+                                          style: const TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: Colors.white),
+                                        )
                                       : null,
                                 ),
                                 Container(
@@ -358,7 +398,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             ),
                             const SizedBox(height: 32),
                             
-                            // --- EDIT PROFILE BUTTON ---
                             SizedBox(
                               width: double.infinity,
                               height: 50,
@@ -369,7 +408,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                     context,
                                     MaterialPageRoute(builder: (context) => const EditProfileScreen()),
                                   ).then((_) {
-                                    // Refresh user data after returning from edit profile
                                     _fetchUserData();
                                   });
                                 },
@@ -377,27 +415,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                   backgroundColor: const Color(0xFF2962FF),
                                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                                 ),
-                                child: const Text(
-                                  "EDIT PROFILE",
-                                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-                                ),
+                                child: const Text("EDIT PROFILE", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
                               ),
                             ),
 
                             const SizedBox(height: 12),
+                            
                             SizedBox(
                               width: double.infinity,
                               height: 50,
                               child: OutlinedButton.icon(
                                 onPressed: () {
-                                  Navigator.pop(context); // Close modal first
-                                  _signOut(); // Then sign out
+                                  Navigator.pop(context); 
+                                  _signOut(); 
                                 },
                                 icon: const Icon(Icons.logout, size: 20, color: Colors.black87),
-                                label: const Text(
-                                  "SIGN OUT",
-                                  style: TextStyle(color: Colors.black87, fontWeight: FontWeight.bold),
-                                ),
+                                label: const Text("SIGN OUT", style: TextStyle(color: Colors.black87, fontWeight: FontWeight.bold)),
                                 style: OutlinedButton.styleFrom(
                                   side: BorderSide(color: Colors.grey.shade300),
                                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
@@ -416,7 +449,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  // Helper for Info Rows
   Widget _buildInfoRow(IconData icon, String label, String value) {
     return Row(
       children: [
@@ -461,9 +493,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20), boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.02), blurRadius: 10, offset: const Offset(0, 4))]),
                 child: Column(
                   children: [
-                    _buildSwitchTile(title: "Auto-Retract on Rain", subtitle: "Automatically pull in rod when rain is detected", icon: Icons.flash_on_rounded, value: _autoRetract, onChanged: (val) => _updateSetting('auto_retract', val)),
+                    _buildSwitchTile(
+                      title: "Auto-Retract on Rain", 
+                      subtitle: "Automatically pull in rod when rain is detected", 
+                      icon: Icons.flash_on_rounded, 
+                      value: _autoRetract, 
+                      onChanged: (val) {
+                        _showConfirmation("Auto-Retract", val, () => _updateSetting('auto_retract', val));
+                      }
+                    ),
                     Divider(height: 1, color: Colors.grey.shade100, indent: 60, endIndent: 20),
-                    _buildSwitchTile(title: "Safety Lock", subtitle: "Prevent manual controls when heavy load detected", icon: Icons.shield_outlined, value: _safetyLock, onChanged: (val) => _updateSetting('safety_lock', val)),
+                    _buildSwitchTile(
+                      title: "Safety Lock", 
+                      subtitle: "Prevent manual controls when heavy load detected", 
+                      icon: Icons.shield_outlined, 
+                      value: _safetyLock, 
+                      onChanged: (val) {
+                        _showConfirmation("Safety Lock", val, () => _updateSetting('safety_lock', val));
+                      }
+                    ),
                   ],
                 ),
               ),
@@ -511,18 +559,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20), boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.02), blurRadius: 10, offset: const Offset(0, 4))]),
                 child: Column(
                   children: [
-                    _buildSwitchTile(title: "Notifications", subtitle: "Receive alerts for rain and completion", icon: Icons.notifications_active_outlined, value: _notificationsEnabled, onChanged: (val) => _updateSetting('notifications', val)),
+                    _buildSwitchTile(
+                      title: "Notifications", 
+                      subtitle: "Receive alerts for rain and completion", 
+                      icon: Icons.notifications_active_outlined, 
+                      value: _notificationsEnabled, 
+                      onChanged: (val) {
+                        _showConfirmation("Notifications", val, () => _updateSetting('notifications', val));
+                      }
+                    ),
                     Divider(height: 1, color: Colors.grey.shade100, indent: 60, endIndent: 20),
                     
                     _buildNavTile(title: "Account", icon: Icons.person_outline, onTap: _showAccountModal),
                     Divider(height: 1, color: Colors.grey.shade100, indent: 60, endIndent: 20),
                     
-                    // --- DEVICE PAIRING (Now Navigates to Screen) ---
                     _buildNavTile(
                       title: "Device Pairing", 
                       icon: Icons.smartphone_outlined, 
                       onTap: () {
-                         // Navigation to the dedicated pairing screen
                          Navigator.push(
                            context,
                            MaterialPageRoute(builder: (context) => const DevicePairingScreen()),
@@ -530,12 +584,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       },
                     ),
                     Divider(height: 1, color: Colors.grey.shade100, indent: 60, endIndent: 20),
-                    // ------------------------------------------------
 
                     _buildNavTile(title: "Device Info", icon: Icons.info_outline, onTap: _showDeviceInfo),
                     Divider(height: 1, color: Colors.grey.shade100, indent: 60, endIndent: 20),
                     
-                    // --- TERMS AND CONDITIONS ---
                     _buildNavTile(
                       title: "Terms & Conditions", 
                       icon: Icons.description_outlined, 

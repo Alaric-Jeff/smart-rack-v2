@@ -111,6 +111,19 @@ class _DashboardContentState extends State<DashboardContent> {
     _fetchSensorData();
   }
 
+  // --- NEW: Helper to extract initials from name ---
+  String _getInitials(String name) {
+    if (name.isEmpty || name == "Loading...") return "";
+    List<String> nameParts = name.trim().split(RegExp(r'\s+')); // Split by whitespace
+    if (nameParts.isEmpty) return "U";
+    
+    String first = nameParts[0].isNotEmpty ? nameParts[0][0] : "";
+    String last = nameParts.length > 1 && nameParts[1].isNotEmpty ? nameParts[1][0] : "";
+    
+    String initials = (first + last).toUpperCase();
+    return initials.isEmpty ? "U" : initials;
+  }
+
   // --- 3. FETCH USER DATA FROM FIRESTORE ---
   Future<void> _fetchUserData() async {
     try {
@@ -169,7 +182,6 @@ class _DashboardContentState extends State<DashboardContent> {
         }
 
         // Device ID - you can customize this logic
-        // For now, using a truncated version of UID
         String deviceId = "LD-${currentUser.uid.substring(0, 8).toUpperCase()}";
 
         if (mounted) {
@@ -182,14 +194,6 @@ class _DashboardContentState extends State<DashboardContent> {
             _isLoadingUser = false;
           });
         }
-
-        debugPrint('=== USER DATA FETCHED ===');
-        debugPrint('Display Name: $_userName');
-        debugPrint('Email: $_userEmail');
-        debugPrint('Device ID: $_deviceId');
-        debugPrint('Member Since: $_memberSince');
-        debugPrint('Photo URL: ${_userProfileUrl ?? "No photo"}');
-        debugPrint('========================');
       } else {
         // User document doesn't exist
         if (mounted) {
@@ -202,18 +206,13 @@ class _DashboardContentState extends State<DashboardContent> {
             _isLoadingUser = false;
           });
         }
-        
-        debugPrint('Warning: User document not found in Firestore');
       }
     } catch (e) {
       debugPrint('Error fetching user data: $e');
-      
       if (mounted) {
         setState(() {
-          _userName = "Error loading data";
+          _userName = "Error";
           _userEmail = "Please try again";
-          _deviceId = "N/A";
-          _memberSince = "N/A";
           _isLoadingUser = false;
         });
       }
@@ -329,12 +328,20 @@ class _DashboardContentState extends State<DashboardContent> {
                               children: [
                                 CircleAvatar(
                                   radius: 50,
-                                  backgroundColor: Colors.blue.shade100,
+                                  backgroundColor: const Color(0xFF2962FF), // Solid blue
                                   backgroundImage: _userProfileUrl != null 
                                       ? NetworkImage(_userProfileUrl!) 
                                       : null,
+                                  // --- UPDATED: Show Initials if no photo ---
                                   child: _userProfileUrl == null 
-                                      ? const Icon(Icons.person, size: 50, color: Colors.blue) 
+                                      ? Text(
+                                          _getInitials(_userName),
+                                          style: const TextStyle(
+                                            fontSize: 32, 
+                                            fontWeight: FontWeight.bold, 
+                                            color: Colors.white
+                                          ),
+                                        ) 
                                       : null,
                                 ),
                                 Container(
@@ -560,9 +567,15 @@ class _DashboardContentState extends State<DashboardContent> {
                   onTap: _showAccountModal, 
                   child: CircleAvatar(
                     radius: 24,
-                    backgroundColor: Colors.blue.shade100,
+                    backgroundColor: const Color(0xFF2962FF), // Darker Blue Background
                     backgroundImage: _userProfileUrl != null ? NetworkImage(_userProfileUrl!) : null,
-                    child: _userProfileUrl == null ? const Icon(Icons.person, color: Color(0xFF2762EA)) : null,
+                    // --- UPDATED: Show Initials here too ---
+                    child: _userProfileUrl == null 
+                      ? Text(
+                          _getInitials(_userName), // Use the helper
+                          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                        ) 
+                      : null,
                   ),
                 ),
               ],

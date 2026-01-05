@@ -38,6 +38,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     _addressController = TextEditingController();
 
     // LIVE UPDATE LISTENERS (For Avatar)
+    _displayNameController.addListener(() { if (mounted) setState(() {}); });
     _firstNameController.addListener(() { if (mounted) setState(() {}); });
     _lastNameController.addListener(() { if (mounted) setState(() {}); });
 
@@ -54,12 +55,26 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     super.dispose();
   }
 
-  // --- AVATAR INITIALS HELPER ---
+  // --- UPDATED AVATAR INITIALS HELPER ---
+  // Priority: Display Name -> First/Last Name -> "U"
   String _getInitials() {
+    // 1. Try Display Name first
+    String display = _displayNameController.text.trim();
+    if (display.isNotEmpty) {
+      List<String> parts = display.split(RegExp(r'\s+'));
+      String first = parts[0][0];
+      String last = parts.length > 1 ? parts[1][0] : "";
+      // If display name is just one word (e.g. "Kirby"), return "K"
+      // If "Kirby Gabayno", return "KG"
+      return (first + last).toUpperCase();
+    }
+
+    // 2. Fallback to First + Last Name
     String first = _firstNameController.text.trim();
     String last = _lastNameController.text.trim();
     String firstLetter = first.isNotEmpty ? first[0] : "";
     String lastLetter = last.isNotEmpty ? last[0] : "";
+    
     String initials = (firstLetter + lastLetter).toUpperCase();
     return initials.isEmpty ? "U" : initials; 
   }
@@ -259,7 +274,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                 const Text("Manage Account", style: TextStyle(fontSize: 14, color: Colors.grey)),
                 const SizedBox(height: 30),
 
-                // --- AVATAR ---
+                // --- AVATAR (Updated to prioritize Initials) ---
                 Center(
                   child: Container(
                     width: 100,
@@ -270,9 +285,12 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                       boxShadow: [BoxShadow(color: const Color(0xFF2962FF).withOpacity(0.3), blurRadius: 15, offset: const Offset(0, 5))],
                     ),
                     alignment: Alignment.center,
-                    child: _photoUrl != null
-                        ? ClipOval(child: Image.network(_photoUrl!, width: 100, height: 100, fit: BoxFit.cover))
-                        : Text(_getInitials(), style: const TextStyle(fontSize: 36, fontWeight: FontWeight.bold, color: Colors.white, letterSpacing: 2)),
+                    // REMOVED logic that checks for _photoUrl. 
+                    // Now strictly uses Initials from the text boxes.
+                    child: Text(
+                      _getInitials(), 
+                      style: const TextStyle(fontSize: 36, fontWeight: FontWeight.bold, color: Colors.white, letterSpacing: 2)
+                    ),
                   ),
                 ),
                 const SizedBox(height: 30),
@@ -288,7 +306,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                     if (val == null || val.isEmpty) return "Required";
                     if (val.length < 3) return "Too short (min 3)";
                     if (val.length > 25) return "Too long (max 25)";
-                    // Allows Letters, Numbers, Dots, Underscores
                     if (!RegExp(r'^[a-zA-Z0-9 ._]+$').hasMatch(val)) {
                       return "No special symbols allowed";
                     }
@@ -307,7 +324,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                         validator: (val) {
                           if (val == null || val.isEmpty) return "Required";
                           if (val.length < 2) return "Too short";
-                          // Allows Letters, Dots, Dashes, Spaces (No numbers)
                           if (!RegExp(r'^[a-zA-Z .-]+$').hasMatch(val)) {
                             return "Letters only";
                           }
@@ -377,7 +393,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                               focusedErrorBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Colors.red, width: 2)),
                             ),
                             validator: (value) {
-                              if (value == null || value.isEmpty) return null; // Optional to have phone
+                              if (value == null || value.isEmpty) return null; 
                               if (!value.startsWith('9')) return "Must start with 9"; 
                               if (value.length != 10) return "Must be 10 digits";
                               return null;
@@ -444,7 +460,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
         TextFormField(
           controller: controller,
           validator: validator,
-          autovalidateMode: AutovalidateMode.onUserInteraction, // Shows error immediately when typing
+          autovalidateMode: AutovalidateMode.onUserInteraction,
           decoration: InputDecoration(
             filled: true, fillColor: Colors.white,
             contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
@@ -506,8 +522,11 @@ class _PasswordDialogState extends State<_PasswordDialog> {
           onPressed: () {
             if (_formKey.currentState!.validate()) {
               Navigator.pop(context);
-              if (widget.hasPassword) widget.onPasswordChange(_currentController.text, _newController.text);
-              else widget.onPasswordSet(_newController.text);
+              if (widget.hasPassword) {
+                widget.onPasswordChange(_currentController.text, _newController.text);
+              } else {
+                widget.onPasswordSet(_newController.text);
+              }
             }
           },
           child: const Text("SAVE"),
