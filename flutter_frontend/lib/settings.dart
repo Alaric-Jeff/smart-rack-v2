@@ -23,10 +23,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _notificationsEnabled = true; 
   double _rainSensitivity = 0.0;     
   
-  // Firebase instances
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  final GoogleSignIn _googleSignIn = GoogleSignIn();
   
   // User Data 
   String _userName = "Loading..."; 
@@ -99,6 +97,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
       if (userDoc.exists) {
         final data = userDoc.data()!;
+
         String? displayName = data['displayName'];
         String? firstName = data['firstName'];
         String? lastName = data['lastName'];
@@ -195,13 +194,43 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
       if (shouldSignOut != true) return;
 
-      await _googleSignIn.signOut();
+      // Get current user to check sign-in method
+      final user = _auth.currentUser;
+      
+      if (user != null) {
+        // Check if user signed in with Google SSO
+        bool isGoogleSignIn = user.providerData.any(
+          (provider) => provider.providerId == 'google.com'
+        );
+        
+        // Only sign out from Google if user actually signed in with Google
+        // and Google Sign-In is properly configured (has client ID)
+        if (isGoogleSignIn) {
+          try {
+            final googleSignIn = GoogleSignIn();
+            // Check if Google Sign-In is initialized (has client ID)
+            // If signOut() is called without client ID, it will throw an error
+            // So we wrap it in try-catch to handle gracefully
+            await googleSignIn.signOut();
+            debugPrint('Signed out from Google Sign-In');
+          } catch (googleError) {
+            // If Google Sign-In sign out fails (e.g., no client ID configured),
+            // just log it and continue with Firebase Auth sign out
+            debugPrint('Google Sign-In sign out skipped: $googleError');
+          }
+        } else {
+          debugPrint('Manual email/password sign-in detected - skipping Google Sign-In sign out');
+        }
+      }
+
+      // Always sign out from Firebase Auth (works for both manual and SSO)
       await _auth.signOut();
+      debugPrint('Signed out from Firebase Auth');
 
       if (mounted) {
         Navigator.of(context).pushAndRemoveUntil(
           MaterialPageRoute(builder: (context) => const LoginPage()),
-          (route) => false, 
+          (route) => false,
         );
       }
     } catch (e) {
@@ -268,7 +297,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  // --- MODAL: DEVICE INFO ---
   void _showDeviceInfo() {
     showDialog(
       context: context,
@@ -299,7 +327,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  // --- MODAL: ACCOUNT ---
   void _showAccountModal() {
     _fetchUserData(showLoading: false);
     
@@ -486,7 +513,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
               const Text("Preferences and configuration", style: TextStyle(fontSize: 14, color: Color(0xFF5A6175), fontWeight: FontWeight.w500)),
               const SizedBox(height: 32),
 
-              // --- 1. Device Automation ---
               const Text("Device Automation", style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
               const SizedBox(height: 12),
               Container(
@@ -518,7 +544,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
               const SizedBox(height: 32),
 
-              // --- 2. Calibration ---
               const Text("Calibration", style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
               const SizedBox(height: 12),
               Container(
@@ -552,7 +577,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
               const SizedBox(height: 32),
 
-              // --- 3. App Settings ---
               const Text("App Settings", style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
               const SizedBox(height: 12),
               Container(
