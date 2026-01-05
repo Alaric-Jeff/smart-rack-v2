@@ -3,10 +3,17 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'dart:async';
 import 'controls.dart'; 
 import 'notification.dart';
 import 'settings.dart'; 
 import 'edit_profile.dart';
+
+// ============================================
+// TOP LEVEL CONFIGURATION
+// ============================================
+const int SENSOR_UPDATE_INTERVAL_SECONDS = 10;
+const int HISTORY_DURATION_MINUTES = 30;
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -73,53 +80,75 @@ class DashboardContent extends StatefulWidget {
 }
 
 class _DashboardContentState extends State<DashboardContent> {
-  // Firebase instances
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
-  // --- 1. USER DATA VARIABLES ---
+  // User data
   String _userName = "Loading...";
   String _userEmail = "Loading...";
   String _deviceId = "N/A";
   String _memberSince = "Loading...";
   String? _userProfileUrl;
   bool _isLoadingUser = true;
+  String? _currentDeviceConnected;
 
-  // --- 2. SENSOR & WEATHER VARIABLES ---
+  // Weather data
   String _currentCity = "Locating...";
-  final String _sensorHumidity = "-- %";
-  final String _sensorTemperature = "-- °C";
-  final String _sensorRainStatus = "--";
-  final String _sensorLight = "-- lux";
-  final String _sensorWeight = "-- kg";
-  final double _rainChance = 0;
+  
+  // Sensor data
+  double _sensorHumidity = 0;
+  double _sensorTemperature = 0;
+  double _sensorLight = 0;
+  double _sensorRainIntensity = 0;
+  double _sensorWeight = 2.5; // Template value in kg
+  
+  // Calculated rainfall confidence
+  double _rainConfidence = 0;
 
-  // History Lists
-  final List<double> _humidityHistory = [];
-  final List<double> _tempHistory = [];
-  final List<double> _rainHistory = [];
-  final List<double> _rainChanceHistory = [];
-  final List<double> _lightHistory = [];
-  final List<double> _weightHistory = [];
+  // Time-series history (client-side, last 30 minutes)
+  final List<SensorDataPoint> _humidityHistory = [];
+  final List<SensorDataPoint> _tempHistory = [];
+  final List<SensorDataPoint> _lightHistory = [];
+  final List<SensorDataPoint> _rainHistory = [];
+  final List<SensorDataPoint> _rainConfidenceHistory = [];
+  final List<SensorDataPoint> _weightHistory = [];
   final List<double> _weatherHistory = [];
+
+  Timer? _sensorUpdateTimer;
+  StreamSubscription<DocumentSnapshot>? _sensorSubscription;
 
   @override
   void initState() {
     super.initState();
-    _fetchUserData(); 
+    _fetchUserData();
     _fetchWeather();
+    _startSensorUpdates();
+  }
+
+  @override
+  void dispose() {
+    _sensorUpdateTimer?.cancel();
+    _sensorSubscription?.cancel();
+    super.dispose();
+  }
+
+  void _startSensorUpdates() {
+    // Start periodic updates
+    _sensorUpdateTimer = Timer.periodic(
+      Duration(seconds: SENSOR_UPDATE_INTERVAL_SECONDS),
+      (_) => _fetchSensorData(),
+    );
+    // Fetch immediately
     _fetchSensorData();
   }
 
-  // --- 3. FETCH USER DATA FROM FIRESTORE ---
   Future<void> _fetchUserData() async {
     try {
       setState(() => _isLoadingUser = true);
 
-      // Get current user from Firebase Auth
       User? currentUser = _auth.currentUser;
-
       if (currentUser == null) {
+        debugPrint('=== NO USER LOGGED IN ===');
         if (mounted) {
           setState(() {
             _userName = "Guest";
@@ -132,7 +161,9 @@ class _DashboardContentState extends State<DashboardContent> {
         return;
       }
 
-      // Fetch user document from Firestore
+      debugPrint('=== FETCHING USER DATA ===');
+      debugPrint('User UID: ${currentUser.uid}');
+
       DocumentSnapshot userDoc = await _firestore
           .collection('users')
           .doc(currentUser.uid)
@@ -141,7 +172,35 @@ class _DashboardContentState extends State<DashboardContent> {
       if (userDoc.exists) {
         Map<String, dynamic> userData = userDoc.data() as Map<String, dynamic>;
 
-        // Extract data with fallbacks
+        // Debug: Print entire userData
+        debugPrint('=== USER DOCUMENT DATA ===');
+        debugPrint('Full userData: $userData');
+        
+        // Check if field exists
+        if (userData.containsKey('currentDeviceConnected')) {
+          debugPrint('Field "currentDeviceConnected" EXISTS');
+          debugPrint('Value: ${userData['currentDeviceConnected']}');
+          debugPrint('Type: ${userData['currentDeviceConnected'].runtimeType}');
+        } else {
+          debugPrint('Field "currentDeviceConnected" DOES NOT EXIST in document');
+          debugPrint('Available fields: ${userData.keys.toList()}');
+        }
+
+        // Try different possible field names
+        _currentDeviceConnected = userData['currentDeviceConnected'] as String?;
+        
+        // Fallback to 'devices' array if currentDeviceConnected is null
+        if (_currentDeviceConnected == null || _currentDeviceConnected!.isEmpty) {
+          debugPrint('currentDeviceConnected is null/empty, checking devices array...');
+          if (userData.containsKey('devices') && userData['devices'] is List) {
+            List devices = userData['devices'] as List;
+            if (devices.isNotEmpty) {
+              _currentDeviceConnected = devices[0].toString();
+              debugPrint('Using first device from array: $_currentDeviceConnected');
+            }
+          }
+        }
+
         String? displayName = userData['displayName'];
         String? firstName = userData['firstName'];
         String? lastName = userData['lastName'];
@@ -149,7 +208,6 @@ class _DashboardContentState extends State<DashboardContent> {
         String? photoUrl = userData['photoUrl'];
         Timestamp? createdAt = userData['createdAt'];
 
-        // Build display name: use displayName if available, otherwise firstName + lastName
         String finalDisplayName;
         if (displayName != null && displayName.isNotEmpty) {
           finalDisplayName = displayName;
@@ -161,15 +219,12 @@ class _DashboardContentState extends State<DashboardContent> {
           finalDisplayName = 'User';
         }
 
-        // Format member since date
         String memberSince = "N/A";
         if (createdAt != null) {
           DateTime date = createdAt.toDate();
           memberSince = "${_getMonthName(date.month)} ${date.year}";
         }
 
-        // Device ID - you can customize this logic
-        // For now, using a truncated version of UID
         String deviceId = "LD-${currentUser.uid.substring(0, 8).toUpperCase()}";
 
         if (mounted) {
@@ -183,15 +238,13 @@ class _DashboardContentState extends State<DashboardContent> {
           });
         }
 
-        debugPrint('=== USER DATA FETCHED ===');
+        debugPrint('=== USER DATA FETCHED SUCCESSFULLY ===');
         debugPrint('Display Name: $_userName');
         debugPrint('Email: $_userEmail');
-        debugPrint('Device ID: $_deviceId');
-        debugPrint('Member Since: $_memberSince');
-        debugPrint('Photo URL: ${_userProfileUrl ?? "No photo"}');
-        debugPrint('========================');
+        debugPrint('Current Device Connected: ${_currentDeviceConnected ?? "NULL/EMPTY"}');
+        debugPrint('=====================================');
       } else {
-        // User document doesn't exist
+        debugPrint('=== USER DOCUMENT DOES NOT EXIST ===');
         if (mounted) {
           setState(() {
             _userName = currentUser.displayName ?? 'User';
@@ -202,12 +255,11 @@ class _DashboardContentState extends State<DashboardContent> {
             _isLoadingUser = false;
           });
         }
-        
-        debugPrint('Warning: User document not found in Firestore');
       }
     } catch (e) {
-      debugPrint('Error fetching user data: $e');
-      
+      debugPrint('=== ERROR FETCHING USER DATA ===');
+      debugPrint('Error: $e');
+      debugPrint('Stack trace: ${StackTrace.current}');
       if (mounted) {
         setState(() {
           _userName = "Error loading data";
@@ -220,7 +272,6 @@ class _DashboardContentState extends State<DashboardContent> {
     }
   }
 
-  // Helper to get month name
   String _getMonthName(int month) {
     const months = [
       'January', 'February', 'March', 'April', 'May', 'June',
@@ -230,7 +281,126 @@ class _DashboardContentState extends State<DashboardContent> {
   }
 
   Future<void> _fetchSensorData() async {
-    debugPrint("Waiting for ESP32 connection...");
+    if (_currentDeviceConnected == null || _currentDeviceConnected!.isEmpty) {
+      debugPrint("No device connected for current user");
+      return;
+    }
+
+    try {
+      // Fetch sensor data from device_sensors/{deviceId}
+      DocumentSnapshot sensorDoc = await _firestore
+          .collection('device_sensors')
+          .doc(_currentDeviceConnected)
+          .get();
+
+      if (sensorDoc.exists) {
+        Map<String, dynamic> sensorData = sensorDoc.data() as Map<String, dynamic>;
+        
+        double humidity = (sensorData['humidity'] ?? 0).toDouble();
+        double temperature = (sensorData['temperature'] ?? 0).toDouble();
+        double light = (sensorData['light'] ?? 0).toDouble();
+        double rainIntensity = (sensorData['rainAO'] ?? 0).toDouble();
+
+        // Calculate rainfall confidence
+        double rainConfidence = _calculateRainfallConfidence(
+          humidity: humidity,
+          temperature: temperature,
+          light: light,
+          rainIntensity: rainIntensity,
+        );
+
+        DateTime now = DateTime.now();
+        
+        if (mounted) {
+          setState(() {
+            _sensorHumidity = humidity;
+            _sensorTemperature = temperature;
+            _sensorLight = light;
+            _sensorRainIntensity = rainIntensity;
+            _rainConfidence = rainConfidence;
+
+            // Add to history with timestamp
+            _addToHistory(_humidityHistory, humidity, now);
+            _addToHistory(_tempHistory, temperature, now);
+            _addToHistory(_lightHistory, light, now);
+            _addToHistory(_rainHistory, rainIntensity, now);
+            _addToHistory(_rainConfidenceHistory, rainConfidence, now);
+            
+            // Weight template with slight variation
+            double weightVariation = (_sensorWeight * 0.98) + (0.04 * (now.second % 10));
+            _addToHistory(_weightHistory, weightVariation, now);
+            _sensorWeight = weightVariation;
+
+            // Clean up old data (older than 30 minutes)
+            _cleanupOldHistory();
+          });
+        }
+
+        debugPrint('=== SENSOR DATA ===');
+        debugPrint('Humidity: $humidity%');
+        debugPrint('Temperature: $temperature°C');
+        debugPrint('Light: $light lux');
+        debugPrint('Rain Intensity: $rainIntensity');
+        debugPrint('Rain Confidence: ${rainConfidence.toStringAsFixed(1)}%');
+      } else {
+        debugPrint('Sensor document not found for device: $_currentDeviceConnected');
+      }
+    } catch (e) {
+      debugPrint('Error fetching sensor data: $e');
+    }
+  }
+
+  double _calculateRainfallConfidence({
+    required double humidity,
+    required double temperature,
+    required double light,
+    required double rainIntensity,
+  }) {
+    // Weights for each factor
+    const double humidityWeight = 0.35;      // 35%
+    const double temperatureWeight = 0.35;   // 35%
+    const double lightWeight = 0.20;         // 20% (less weight due to artificial light)
+    const double rainIntensityWeight = 0.10; // 10%
+
+    // Normalize values to 0-100 scale
+    
+    // Humidity: Higher humidity = higher rain chance (60-100% is high)
+    double humidityScore = ((humidity - 60) / 40).clamp(0, 1) * 100;
+    
+    // Temperature: Lower temperature = higher rain chance (15-25°C is rain-prone)
+    double tempScore = (1 - ((temperature - 15) / 10).clamp(0, 1)) * 100;
+    
+    // Light: Lower light = higher rain chance (clouds reduce light)
+    // Assuming max light is around 4000 lux for outdoor
+    double lightScore = (1 - (light / 4000).clamp(0, 1)) * 100;
+    
+    // Rain Intensity: Higher value = higher rain chance (0-4095 ADC range)
+    double rainScore = ((4095 - rainIntensity) / 4095) * 100;
+
+    // Calculate weighted confidence
+    double confidence = (
+      (humidityScore * humidityWeight) +
+      (tempScore * temperatureWeight) +
+      (lightScore * lightWeight) +
+      (rainScore * rainIntensityWeight)
+    );
+
+    return confidence.clamp(0, 100);
+  }
+
+  void _addToHistory(List<SensorDataPoint> history, double value, DateTime timestamp) {
+    history.add(SensorDataPoint(value: value, timestamp: timestamp));
+  }
+
+  void _cleanupOldHistory() {
+    DateTime cutoff = DateTime.now().subtract(Duration(minutes: HISTORY_DURATION_MINUTES));
+    
+    _humidityHistory.removeWhere((point) => point.timestamp.isBefore(cutoff));
+    _tempHistory.removeWhere((point) => point.timestamp.isBefore(cutoff));
+    _lightHistory.removeWhere((point) => point.timestamp.isBefore(cutoff));
+    _rainHistory.removeWhere((point) => point.timestamp.isBefore(cutoff));
+    _rainConfidenceHistory.removeWhere((point) => point.timestamp.isBefore(cutoff));
+    _weightHistory.removeWhere((point) => point.timestamp.isBefore(cutoff));
   }
 
   Future<Map<String, dynamic>> _fetchWeather() async {
@@ -284,7 +454,6 @@ class _DashboardContentState extends State<DashboardContent> {
     return {"condition": "Rainy", "description": "Showers", "icon": Icons.grain};
   }
 
-  // --- ACCOUNT MODAL ---
   void _showAccountModal() {
     showModalBottomSheet(
       context: context,
@@ -300,7 +469,6 @@ class _DashboardContentState extends State<DashboardContent> {
           ),
           child: Column(
             children: [
-              // Header
               Padding(
                 padding: const EdgeInsets.fromLTRB(24, 24, 24, 10),
                 child: Row(
@@ -323,7 +491,6 @@ class _DashboardContentState extends State<DashboardContent> {
                         padding: const EdgeInsets.all(24),
                         child: Column(
                           children: [
-                            // Profile Picture
                             Stack(
                               alignment: Alignment.bottomRight,
                               children: [
@@ -350,7 +517,6 @@ class _DashboardContentState extends State<DashboardContent> {
                             ),
                             const SizedBox(height: 16),
                             
-                            // Name & Email
                             Text(_userName, 
                                 style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
                             const SizedBox(height: 4),
@@ -359,7 +525,6 @@ class _DashboardContentState extends State<DashboardContent> {
                             
                             const SizedBox(height: 32),
 
-                            // Account Info Section
                             Align(
                               alignment: Alignment.centerLeft,
                               child: Text("Account Information", 
@@ -377,7 +542,9 @@ class _DashboardContentState extends State<DashboardContent> {
                                 children: [
                                   _buildInfoRow(Icons.email_outlined, "EMAIL", _userEmail),
                                   const Divider(height: 30),
-                                  _buildInfoRow(Icons.phone_android, "DEVICE ID", _deviceId),
+                                  _buildInfoRow(Icons.router, "CONNECTED DEVICE", _currentDeviceConnected ?? "No device connected"),
+                                  const Divider(height: 30),
+                                  _buildInfoRow(Icons.phone_android, "USER ID", _deviceId),
                                   const Divider(height: 30),
                                   _buildInfoRow(Icons.calendar_today_outlined, "MEMBER SINCE", _memberSince),
                                 ],
@@ -386,7 +553,6 @@ class _DashboardContentState extends State<DashboardContent> {
 
                             const SizedBox(height: 32),
 
-                            // Edit Profile Button
                             SizedBox(
                               width: double.infinity,
                               height: 50,
@@ -396,7 +562,7 @@ class _DashboardContentState extends State<DashboardContent> {
                                   Navigator.push(
                                     context, 
                                     MaterialPageRoute(builder: (context) => const EditProfileScreen())
-                                  );
+                                  ).then((_) => _fetchUserData()); // Refresh data when coming back
                                 },
                                 style: ElevatedButton.styleFrom(
                                   backgroundColor: const Color(0xFF2962FF),
@@ -408,18 +574,14 @@ class _DashboardContentState extends State<DashboardContent> {
                             
                             const SizedBox(height: 12),
                             
-                            // Sign Out Button
                             SizedBox(
                               width: double.infinity,
                               height: 50,
                               child: OutlinedButton.icon(
                                 onPressed: () async {
-                                  // Sign out from Firebase
                                   await _auth.signOut();
                                   if (mounted) {
-                                    Navigator.pop(context); // Close modal
-                                    // Navigate to login screen
-                                    // Navigator.pushReplacementNamed(context, '/login');
+                                    Navigator.pop(context);
                                   }
                                 }, 
                                 icon: const Icon(Icons.logout, size: 20, color: Colors.black87),
@@ -469,7 +631,7 @@ class _DashboardContentState extends State<DashboardContent> {
     );
   }
 
-  void _showDetailModal(String title, String value, List<double> historyData, String statusMsg) {
+  void _showDetailModal(String title, String value, List<SensorDataPoint> historyData, String statusMsg) {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -509,11 +671,11 @@ class _DashboardContentState extends State<DashboardContent> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            const Text("Recent History", style: TextStyle(color: Colors.grey, fontSize: 14)),
+                            const Text("Recent History (Last 30 min)", style: TextStyle(color: Colors.grey, fontSize: 14)),
                             const SizedBox(height: 20),
                             historyData.isEmpty
                                 ? SizedBox(height: 100, width: double.infinity, child: Center(child: Text("Waiting for sensor data...", style: TextStyle(color: Colors.grey.shade400, fontStyle: FontStyle.italic))))
-                                : SizedBox(height: 150, width: double.infinity, child: CustomPaint(painter: LineChartPainter(data: historyData, color: const Color(0xFF2962FF)))),
+                                : SizedBox(height: 150, width: double.infinity, child: CustomPaint(painter: TimeSeriesChartPainter(data: historyData, color: const Color(0xFF2962FF)))),
                           ],
                         ),
                       ),
@@ -521,7 +683,7 @@ class _DashboardContentState extends State<DashboardContent> {
                       const Text("Status", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
                       const SizedBox(height: 8),
                       Text(
-                          value == "--" || value == "-- %" || value == "-- °C" ? "Connect your Smart Rack sensors to see real-time status." : statusMsg,
+                          value == "0.0" || value == "0" || _currentDeviceConnected == null ? "Connect your Smart Rack sensors to see real-time status." : statusMsg,
                           style: const TextStyle(fontSize: 14, color: Color(0xFF5A6175), height: 1.5)),
                     ],
                   ),
@@ -538,6 +700,13 @@ class _DashboardContentState extends State<DashboardContent> {
   Widget build(BuildContext context) {
     final size = MediaQuery.of(context).size;
     final double padding = size.width * 0.05;
+
+    String getRainStatus() {
+      if (_sensorRainIntensity > 3500) return "Dry";
+      if (_sensorRainIntensity > 2000) return "Drizzle";
+      if (_sensorRainIntensity > 1000) return "Rain";
+      return "Heavy Rain";
+    }
 
     return SafeArea(
       child: SingleChildScrollView(
@@ -569,13 +738,13 @@ class _DashboardContentState extends State<DashboardContent> {
             ),
             const SizedBox(height: 24),
 
-            // Weather & Sensor Cards
+            // Weather Card
             FutureBuilder<Map<String, dynamic>>(
               future: _fetchWeather(),
               builder: (context, snapshot) {
                 final data = snapshot.data ?? {"temp": "--", "condition": "Loading...", "description": "...", "icon": Icons.wb_sunny};
                 return GestureDetector(
-                  onTap: () => _showDetailModal("Weather", data['temp'], _weatherHistory, "Current weather is optimal."),
+                  onTap: () => _showDetailModal("Weather", data['temp'], [], "Current weather is optimal."),
                   child: Container(
                     width: double.infinity,
                     padding: const EdgeInsets.all(24),
@@ -615,6 +784,7 @@ class _DashboardContentState extends State<DashboardContent> {
 
             const SizedBox(height: 24),
 
+            // Sensor Cards Grid
             GridView.count(
               crossAxisCount: 2,
               shrinkWrap: true,
@@ -623,12 +793,55 @@ class _DashboardContentState extends State<DashboardContent> {
               mainAxisSpacing: 16,
               childAspectRatio: 0.85,
               children: [
-                _buildSensorCard(title: "Humidity", value: _sensorHumidity, icon: Icons.water_drop_outlined, color: Colors.green, bgColor: const Color(0xFFE8F5E9), onTap: () => _showDetailModal("Humidity", _sensorHumidity, _humidityHistory, "Humidity is optimal.")),
-                _buildSensorCard(title: "Temperature", value: _sensorTemperature, icon: Icons.thermostat, color: Colors.blue, bgColor: const Color(0xFFE3F2FD), onTap: () => _showDetailModal("Temperature", _sensorTemperature, _tempHistory, "Temperature is good.")),
-                _buildSensorCard(title: "Rain Sensor", value: _sensorRainStatus, subtitle: _sensorRainStatus == "Dry" ? "Safe" : (_sensorRainStatus == "--" ? "" : "Alert"), icon: Icons.cloud_outlined, color: Colors.green, bgColor: const Color(0xFFE8F5E9), onTap: () => _showDetailModal("Rain Sensor", _sensorRainStatus, _rainHistory, "No rain.")),
-                _buildCircleProgressCard(title: "Rain Chance", percentage: _rainChance.toInt(), icon: Icons.thunderstorm_outlined, onTap: () => _showDetailModal("Rain Chance", "${_rainChance.toInt()}%", _rainChanceHistory, "Low chance.")),
-                _buildSensorCard(title: "Ambient Light", value: _sensorLight, icon: Icons.wb_sunny_outlined, color: Colors.orange, bgColor: const Color(0xFFFFF3E0), onTap: () => _showDetailModal("Ambient Light", _sensorLight, _lightHistory, "Good sunlight.")),
-                _buildSensorCard(title: "Load Weight", value: _sensorWeight, subtitle: _sensorWeight == "-- kg" ? "" : "Drying...", icon: Icons.scale_outlined, color: Colors.indigo, bgColor: const Color(0xFFE8EAF6), showChip: _sensorWeight != "-- kg", onTap: () => _showDetailModal("Load Weight", _sensorWeight, _weightHistory, "Weight decreasing.")),
+                _buildSensorCard(
+                  title: "Humidity", 
+                  value: "${_sensorHumidity.toStringAsFixed(1)}%", 
+                  icon: Icons.water_drop_outlined, 
+                  color: Colors.green, 
+                  bgColor: const Color(0xFFE8F5E9), 
+                  onTap: () => _showDetailModal("Humidity", "${_sensorHumidity.toStringAsFixed(1)}%", _humidityHistory, "Humidity is optimal for drying.")
+                ),
+                _buildSensorCard(
+                  title: "Temperature", 
+                  value: "${_sensorTemperature.toStringAsFixed(1)}°C", 
+                  icon: Icons.thermostat, 
+                  color: Colors.blue, 
+                  bgColor: const Color(0xFFE3F2FD), 
+                  onTap: () => _showDetailModal("Temperature", "${_sensorTemperature.toStringAsFixed(1)}°C", _tempHistory, "Temperature is good for drying.")
+                ),
+                _buildSensorCard(
+                  title: "Rain Sensor", 
+                  value: getRainStatus(), 
+                  subtitle: _sensorRainIntensity > 3000 ? "Safe" : "Alert", 
+                  icon: Icons.cloud_outlined, 
+                  color: _sensorRainIntensity > 3000 ? Colors.green : Colors.orange, 
+                  bgColor: const Color(0xFFE8F5E9), 
+                  onTap: () => _showDetailModal("Rain Sensor", getRainStatus(), _rainHistory, "Current rain intensity: ${_sensorRainIntensity.toStringAsFixed(0)}")
+                ),
+                _buildCircleProgressCard(
+                  title: "Rain Chance", 
+                  percentage: _rainConfidence.toInt(), 
+                  icon: Icons.thunderstorm_outlined, 
+                  onTap: () => _showDetailModal("Rain Chance", "${_rainConfidence.toInt()}%", _rainConfidenceHistory, "Calculated based on humidity, temperature, light, and rain sensor.")
+                ),
+                _buildSensorCard(
+                  title: "Ambient Light", 
+                  value: "${_sensorLight.toStringAsFixed(0)} lux", 
+                  icon: Icons.wb_sunny_outlined, 
+                  color: Colors.orange, 
+                  bgColor: const Color(0xFFFFF3E0), 
+                  onTap: () => _showDetailModal("Ambient Light", "${_sensorLight.toStringAsFixed(0)} lux", _lightHistory, "Good sunlight for drying.")
+                ),
+                _buildSensorCard(
+                  title: "Load Weight", 
+                  value: "${_sensorWeight.toStringAsFixed(2)} kg", 
+                  subtitle: _sensorWeight > 0 ? "Drying..." : "", 
+                  icon: Icons.scale_outlined, 
+                  color: Colors.indigo, 
+                  bgColor: const Color(0xFFE8EAF6), 
+                  showChip: _sensorWeight > 0, 
+                  onTap: () => _showDetailModal("Load Weight", "${_sensorWeight.toStringAsFixed(2)} kg", _weightHistory, "Weight is decreasing as clothes dry.")
+                ),
               ],
             ),
             const SizedBox(height: 80),
@@ -638,19 +851,59 @@ class _DashboardContentState extends State<DashboardContent> {
     );
   }
 
-  Widget _buildSensorCard({required String title, required String value, String? subtitle, required IconData icon, required Color color, required Color bgColor, bool showChip = false, required VoidCallback onTap}) {
+  Widget _buildSensorCard({
+    required String title, 
+    required String value, 
+    String? subtitle, 
+    required IconData icon, 
+    required Color color, 
+    required Color bgColor, 
+    bool showChip = false, 
+    required VoidCallback onTap
+  }) {
     return GestureDetector(
       onTap: onTap,
       child: Container(
         padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20)),
+        decoration: BoxDecoration(
+          color: Colors.white, 
+          borderRadius: BorderRadius.circular(20),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.05),
+              blurRadius: 10,
+              offset: const Offset(0, 4),
+            )
+          ],
+        ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Container(padding: const EdgeInsets.all(8), decoration: BoxDecoration(color: bgColor, shape: BoxShape.circle), child: Icon(icon, color: color, size: 20)), if (showChip) Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4), decoration: BoxDecoration(color: Colors.blue.withOpacity(0.1), borderRadius: BorderRadius.circular(10)), child: const Text("Drying...", style: TextStyle(fontSize: 10, color: Colors.blue, fontWeight: FontWeight.bold)))]),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween, 
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(8), 
+                  decoration: BoxDecoration(color: bgColor, shape: BoxShape.circle), 
+                  child: Icon(icon, color: color, size: 20)
+                ), 
+                if (showChip) 
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4), 
+                    decoration: BoxDecoration(
+                      color: Colors.blue.withOpacity(0.1), 
+                      borderRadius: BorderRadius.circular(10)
+                    ), 
+                    child: const Text("Drying...", style: TextStyle(fontSize: 10, color: Colors.blue, fontWeight: FontWeight.bold))
+                  )
+              ]
+            ),
             const Spacer(),
             Text(value, style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
-            if (subtitle != null && subtitle.isNotEmpty) ...[const SizedBox(height: 4), Text(subtitle, style: TextStyle(fontSize: 12, color: color, fontWeight: FontWeight.bold))],
+            if (subtitle != null && subtitle.isNotEmpty) ...[
+              const SizedBox(height: 4), 
+              Text(subtitle, style: TextStyle(fontSize: 12, color: color, fontWeight: FontWeight.bold))
+            ],
             const Spacer(),
             Text(title, style: TextStyle(fontSize: 13, color: Colors.grey[600], fontWeight: FontWeight.w500)),
           ],
@@ -659,18 +912,50 @@ class _DashboardContentState extends State<DashboardContent> {
     );
   }
 
-  Widget _buildCircleProgressCard({required String title, required int percentage, required IconData icon, required VoidCallback onTap}) {
+  Widget _buildCircleProgressCard({
+    required String title, 
+    required int percentage, 
+    required IconData icon, 
+    required VoidCallback onTap
+  }) {
     return GestureDetector(
       onTap: onTap,
       child: Container(
         padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20)),
+        decoration: BoxDecoration(
+          color: Colors.white, 
+          borderRadius: BorderRadius.circular(20),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.05),
+              blurRadius: 10,
+              offset: const Offset(0, 4),
+            )
+          ],
+        ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Icon(icon, color: Colors.blue, size: 24),
             const Spacer(),
-            Center(child: Stack(alignment: Alignment.center, children: [SizedBox(height: 70, width: 70, child: CircularProgressIndicator(value: percentage / 100, strokeWidth: 6, backgroundColor: Colors.grey[100], color: const Color(0xFF1E2339))), Text("$percentage%", style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold))])),
+            Center(
+              child: Stack(
+                alignment: Alignment.center, 
+                children: [
+                  SizedBox(
+                    height: 70, 
+                    width: 70, 
+                    child: CircularProgressIndicator(
+                      value: percentage / 100, 
+                      strokeWidth: 6, 
+                      backgroundColor: Colors.grey[100], 
+                      color: const Color(0xFF1E2339)
+                    )
+                  ), 
+                  Text("$percentage%", style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold))
+                ]
+              )
+            ),
             const Spacer(),
             Text(title, style: TextStyle(fontSize: 13, color: Colors.grey[600], fontWeight: FontWeight.w500)),
           ],
@@ -680,33 +965,85 @@ class _DashboardContentState extends State<DashboardContent> {
   }
 }
 
-class LineChartPainter extends CustomPainter {
-  final List<double> data;
+// ==========================================================
+// SENSOR DATA POINT CLASS
+// ==========================================================
+class SensorDataPoint {
+  final double value;
+  final DateTime timestamp;
+
+  SensorDataPoint({required this.value, required this.timestamp});
+}
+
+// ==========================================================
+// TIME SERIES CHART PAINTER
+// ==========================================================
+class TimeSeriesChartPainter extends CustomPainter {
+  final List<SensorDataPoint> data;
   final Color color;
-  LineChartPainter({required this.data, required this.color});
+  
+  TimeSeriesChartPainter({required this.data, required this.color});
+  
   @override
   void paint(Canvas canvas, Size size) {
     if (data.isEmpty) return;
-    final paint = Paint()..color = color..strokeWidth = 3..style = PaintingStyle.stroke;
-    final dotPaint = Paint()..color = color..style = PaintingStyle.fill;
-    double maxVal = data.reduce((a, b) => a > b ? a : b);
-    double minVal = data.reduce((a, b) => a < b ? a : b);
-    if (maxVal == minVal) { maxVal += 1; minVal -= 1; }
+    
+    final paint = Paint()
+      ..color = color
+      ..strokeWidth = 3
+      ..style = PaintingStyle.stroke;
+    
+    final dotPaint = Paint()
+      ..color = color
+      ..style = PaintingStyle.fill;
+    
+    // Find min and max values
+    double maxVal = data.map((e) => e.value).reduce((a, b) => a > b ? a : b);
+    double minVal = data.map((e) => e.value).reduce((a, b) => a < b ? a : b);
+    
+    if (maxVal == minVal) { 
+      maxVal += 1; 
+      minVal -= 1; 
+    }
+    
     final double spacing = size.width / (data.length - 1);
     final double range = maxVal - minVal;
     final path = Path();
+    
     for (int i = 0; i < data.length; i++) {
       final double x = i * spacing;
-      final double y = size.height - ((data[i] - minVal) / range) * size.height;
+      final double y = size.height - ((data[i].value - minVal) / range) * size.height;
+      
       if (i == 0) {
         path.moveTo(x, y);
       } else {
         path.lineTo(x, y);
       }
+      
       canvas.drawCircle(Offset(x, y), 4, dotPaint);
     }
+    
     canvas.drawPath(path, paint);
+    
+    // Draw gradient fill under the line
+    final gradientPaint = Paint()
+      ..shader = LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [
+          color.withOpacity(0.3),
+          color.withOpacity(0.0),
+        ],
+      ).createShader(Rect.fromLTWH(0, 0, size.width, size.height));
+    
+    final fillPath = Path.from(path);
+    fillPath.lineTo(size.width, size.height);
+    fillPath.lineTo(0, size.height);
+    fillPath.close();
+    
+    canvas.drawPath(fillPath, gradientPaint);
   }
+  
   @override
   bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
 }

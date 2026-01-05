@@ -2,10 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:google_sign_in/google_sign_in.dart';
-import 'terms_and_condtions.dart'; // Make sure this matches your actual file name!
-import 'edit_profile.dart'; // Ensure this import is present
-import 'device_pairing.dart'; // <--- IMPORT ADDED for the new screen
-import 'main.dart'; // Import LoginPage
+import 'terms_and_condtions.dart';
+import 'edit_profile.dart';
+import 'device_pairing.dart';
+import 'main.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -15,18 +15,14 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
-  // --- STATE VARIABLES ---
   bool _autoRetract = true; 
   bool _safetyLock = true;
   bool _notificationsEnabled = true; 
   double _rainSensitivity = 50;
   
-  // Firebase instances
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  final GoogleSignIn _googleSignIn = GoogleSignIn();
   
-  // User Data (For the Modal)
   String _userName = "Loading..."; 
   String _userEmail = "Loading...";
   String _deviceId = "Loading..."; 
@@ -37,13 +33,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   void initState() {
     super.initState();
-    _fetchUserData(showLoading: true); // Show loading on initial load
+    _fetchUserData(showLoading: true);
   }
 
-  // --- FETCH USER DATA FROM FIRESTORE ---
   Future<void> _fetchUserData({bool showLoading = false}) async {
     try {
-      // Only show loading if explicitly requested (initial load) or if we don't have data yet
       final bool shouldShowLoading = showLoading || _userName == "Loading...";
       if (shouldShowLoading) {
         setState(() => _isLoadingUserData = true);
@@ -68,7 +62,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (userDoc.exists) {
         final data = userDoc.data()!;
 
-        // Extract data with fallbacks
         String? displayName = data['displayName'];
         String? firstName = data['firstName'];
         String? lastName = data['lastName'];
@@ -76,7 +69,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
         String? photoUrl = data['photoUrl'];
         Timestamp? createdAt = data['createdAt'];
 
-        // Build display name: use displayName if available, otherwise firstName + lastName
         String finalDisplayName;
         if (displayName != null && displayName.isNotEmpty) {
           finalDisplayName = displayName;
@@ -88,14 +80,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
           finalDisplayName = user.displayName ?? 'User';
         }
 
-        // Format member since date
         String memberSince = "Recently";
         if (createdAt != null) {
           DateTime date = createdAt.toDate();
           memberSince = "${_getMonthName(date.month)} ${date.year}";
         }
 
-        // Device ID - using truncated version of UID
         String deviceId = "LD-${user.uid.substring(0, 8).toUpperCase()}";
 
         if (mounted) {
@@ -117,7 +107,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
         debugPrint('Photo URL: ${_userProfileUrl ?? "No photo"}');
         debugPrint('========================');
       } else {
-        // User document doesn't exist, use Auth data
         if (mounted) {
           setState(() {
             _userName = user.displayName ?? 'User';
@@ -146,7 +135,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  // Helper to get month name
   String _getMonthName(int month) {
     const months = [
       'January', 'February', 'March', 'April', 'May', 'June',
@@ -155,10 +143,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     return months[month - 1];
   }
 
-  // --- SIGN OUT FUNCTION ---
   Future<void> _signOut() async {
     try {
-      // Show confirmation dialog
       final shouldSignOut = await showDialog<bool>(
         context: context,
         builder: (context) => AlertDialog(
@@ -193,17 +179,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
       if (shouldSignOut != true) return;
 
-      // Sign out from Google Sign In (if signed in with Google)
-      await _googleSignIn.signOut();
+      // Check if user signed in with Google before trying to sign out
+      final user = _auth.currentUser;
+      if (user != null) {
+        bool isGoogleSignIn = user.providerData.any(
+          (provider) => provider.providerId == 'google.com'
+        );
+        
+        if (isGoogleSignIn) {
+          await GoogleSignIn().signOut();
+          debugPrint('Signed out from Google');
+        }
+      }
 
-      // Sign out from Firebase Auth (destroys ID token)
       await _auth.signOut();
+      debugPrint('Signed out from Firebase Auth');
 
       if (mounted) {
-        // Navigate to login screen and clear navigation stack
         Navigator.of(context).pushAndRemoveUntil(
           MaterialPageRoute(builder: (context) => const LoginPage()),
-          (route) => false, // Remove all previous routes
+          (route) => false,
         );
       }
     } catch (e) {
@@ -219,7 +214,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  // --- LOGIC: UPDATE SETTINGS ---
   Future<void> _updateSetting(String key, dynamic value) async {
     setState(() {
       if (key == 'auto_retract') _autoRetract = value;
@@ -230,7 +224,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     debugPrint("Setting Updated -> $key: $value");
   }
 
-  // --- MODAL: DEVICE INFO ---
   void _showDeviceInfo() {
     showDialog(
       context: context,
@@ -261,9 +254,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  // --- MODAL: ACCOUNT ---
   void _showAccountModal() {
-    // Refresh user data in background (don't show loading if we already have data)
     _fetchUserData(showLoading: false);
     
     showModalBottomSheet(
@@ -358,7 +349,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             ),
                             const SizedBox(height: 32),
                             
-                            // --- EDIT PROFILE BUTTON ---
                             SizedBox(
                               width: double.infinity,
                               height: 50,
@@ -369,7 +359,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                     context,
                                     MaterialPageRoute(builder: (context) => const EditProfileScreen()),
                                   ).then((_) {
-                                    // Refresh user data after returning from edit profile
                                     _fetchUserData();
                                   });
                                 },
@@ -390,8 +379,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               height: 50,
                               child: OutlinedButton.icon(
                                 onPressed: () {
-                                  Navigator.pop(context); // Close modal first
-                                  _signOut(); // Then sign out
+                                  Navigator.pop(context);
+                                  _signOut();
                                 },
                                 icon: const Icon(Icons.logout, size: 20, color: Colors.black87),
                                 label: const Text(
@@ -416,7 +405,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  // Helper for Info Rows
   Widget _buildInfoRow(IconData icon, String label, String value) {
     return Row(
       children: [
@@ -454,7 +442,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
               const Text("Preferences and configuration", style: TextStyle(fontSize: 14, color: Color(0xFF5A6175), fontWeight: FontWeight.w500)),
               const SizedBox(height: 32),
 
-              // --- 1. Device Automation ---
               const Text("Device Automation", style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
               const SizedBox(height: 12),
               Container(
@@ -470,7 +457,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
               const SizedBox(height: 32),
 
-              // --- 2. Calibration ---
               const Text("Calibration", style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
               const SizedBox(height: 12),
               Container(
@@ -504,7 +490,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
               const SizedBox(height: 32),
 
-              // --- 3. App Settings ---
               const Text("App Settings", style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
               const SizedBox(height: 12),
               Container(
@@ -517,12 +502,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     _buildNavTile(title: "Account", icon: Icons.person_outline, onTap: _showAccountModal),
                     Divider(height: 1, color: Colors.grey.shade100, indent: 60, endIndent: 20),
                     
-                    // --- DEVICE PAIRING (Now Navigates to Screen) ---
                     _buildNavTile(
                       title: "Device Pairing", 
                       icon: Icons.smartphone_outlined, 
                       onTap: () {
-                         // Navigation to the dedicated pairing screen
                          Navigator.push(
                            context,
                            MaterialPageRoute(builder: (context) => const DevicePairingScreen()),
@@ -530,12 +513,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       },
                     ),
                     Divider(height: 1, color: Colors.grey.shade100, indent: 60, endIndent: 20),
-                    // ------------------------------------------------
 
                     _buildNavTile(title: "Device Info", icon: Icons.info_outline, onTap: _showDeviceInfo),
                     Divider(height: 1, color: Colors.grey.shade100, indent: 60, endIndent: 20),
                     
-                    // --- TERMS AND CONDITIONS ---
                     _buildNavTile(
                       title: "Terms & Conditions", 
                       icon: Icons.description_outlined, 
