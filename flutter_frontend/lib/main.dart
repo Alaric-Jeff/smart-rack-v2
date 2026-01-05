@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart'; 
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:google_sign_in/google_sign_in.dart';
@@ -55,12 +56,6 @@ class _LoginPageState extends State<LoginPage> {
   // Google Sign In
   final GoogleSignIn _googleSignIn = GoogleSignIn();
 
-  // API Configuration (only for SSO if needed)
-  static const String _baseUrl = 'http://localhost:3000';
-  
-  // Testing Mode - Set to true to skip backend calls during SSO testing
-  static const bool _testingMode = true;
-
   // ✨ SERVERLESS Manual Login - Direct Firebase Auth
   Future<void> _login() async {
     if (!_formKey.currentState!.validate()) return;
@@ -68,25 +63,32 @@ class _LoginPageState extends State<LoginPage> {
     setState(() => _isLoading = true);
 
     try {
-      // Sign in with Firebase Auth (serverless!)
+      // 1. Sign in with Firebase Auth
       UserCredential userCredential = await _auth.signInWithEmailAndPassword(
         email: _emailController.text.trim(),
-        password: _passwordController.text,
+        password: _passwordController.text.trim(), // Kept the trim fix
       );
 
-      // Optional: Verify user exists in Firestore
+      // 2. Check if User Document exists in Firestore
       String uid = userCredential.user!.uid;
       DocumentSnapshot userDoc = await _firestore.collection('users').doc(uid).get();
 
+      // --- AUTO-FIX LOGIC START ---
       if (!userDoc.exists) {
-        // User authenticated but no Firestore document (shouldn't happen normally)
-        await _auth.signOut();
-        if (mounted) {
-          setState(() => _isLoading = false);
-          _showSnackBar('Account data not found. Please contact support.', Colors.red);
-        }
-        return;
+        debugPrint("User authenticated but missing Firestore doc. Creating one now...");
+        
+        // Create the missing document automatically
+        await _firestore.collection('users').doc(uid).set({
+          'email': _emailController.text.trim(),
+          'uid': uid,
+          'createdAt': FieldValue.serverTimestamp(),
+          'displayName': 'User', // Default name since we don't know it
+          'role': 'user',
+        });
+        
+        debugPrint("Missing document created successfully.");
       }
+      // --- AUTO-FIX LOGIC END ---
 
       if (mounted) {
         setState(() => _isLoading = false);
@@ -103,8 +105,6 @@ class _LoginPageState extends State<LoginPage> {
         setState(() => _isLoading = false);
         String errorMessage = 'Login failed';
 
-        // Map Firebase Auth errors to user-friendly messages
-        // (matching your backend logic)
         switch (e.code) {
           case 'user-not-found':
             errorMessage = 'No account found with this email';
@@ -183,12 +183,6 @@ class _LoginPageState extends State<LoginPage> {
         if (mounted) {
           setState(() => _isLoading = false);
           _showSnackBar('Welcome back!', Colors.green);
-          
-          debugPrint('=== GOOGLE SSO LOGIN SUCCESS ===');
-          debugPrint('UUID: ${user.uid}');
-          debugPrint('Display Name: ${user.displayName}');
-          debugPrint('Email: ${user.email}');
-          debugPrint('================================');
           
           // Navigate to home screen
           Navigator.pushReplacement(
@@ -498,18 +492,32 @@ class _LoginPageState extends State<LoginPage> {
 
                 const SizedBox(height: 20),
 
-                GestureDetector(
-                  onTap: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => const TermsAndConditionsScreen(),
+                // --- MODIFIED FOOTER ---
+                RichText(
+                  textAlign: TextAlign.center,
+                  text: TextSpan(
+                    text: 'By signing in, you agree to our ',
+                    style: const TextStyle(fontSize: 12, color: Colors.black54),
+                    children: [
+                      TextSpan(
+                        text: 'Terms and Conditions',
+                        style: const TextStyle(
+                          color: Colors.blue, // Blue Accent
+                          fontWeight: FontWeight.bold,
+                          decoration: TextDecoration.underline,
+                          decorationColor: Colors.blue,
+                        ),
+                        recognizer: TapGestureRecognizer()
+                          ..onTap = () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => const TermsAndConditionsScreen(),
+                              ),
+                            );
+                          },
                       ),
-                    );
-                  },
-                  child: const Text(
-                    'By signing in, you agree to our Terms and Conditions',
-                    style: TextStyle(fontSize: 12, color: Colors.black54),
+                    ],
                   ),
                 ),
               ],

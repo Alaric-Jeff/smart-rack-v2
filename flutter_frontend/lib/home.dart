@@ -142,6 +142,20 @@ class _DashboardContentState extends State<DashboardContent> {
     _fetchSensorData();
   }
 
+  // --- NEW: Helper to extract initials from name ---
+  String _getInitials(String name) {
+    if (name.isEmpty || name == "Loading...") return "";
+    List<String> nameParts = name.trim().split(RegExp(r'\s+')); // Split by whitespace
+    if (nameParts.isEmpty) return "U";
+    
+    String first = nameParts[0].isNotEmpty ? nameParts[0][0] : "";
+    String last = nameParts.length > 1 && nameParts[1].isNotEmpty ? nameParts[1][0] : "";
+    
+    String initials = (first + last).toUpperCase();
+    return initials.isEmpty ? "U" : initials;
+  }
+
+  // --- 3. FETCH USER DATA FROM FIRESTORE ---
   Future<void> _fetchUserData() async {
     try {
       setState(() => _isLoadingUser = true);
@@ -225,6 +239,7 @@ class _DashboardContentState extends State<DashboardContent> {
           memberSince = "${_getMonthName(date.month)} ${date.year}";
         }
 
+        // Device ID - you can customize this logic
         String deviceId = "LD-${currentUser.uid.substring(0, 8).toUpperCase()}";
 
         if (mounted) {
@@ -237,12 +252,6 @@ class _DashboardContentState extends State<DashboardContent> {
             _isLoadingUser = false;
           });
         }
-
-        debugPrint('=== USER DATA FETCHED SUCCESSFULLY ===');
-        debugPrint('Display Name: $_userName');
-        debugPrint('Email: $_userEmail');
-        debugPrint('Current Device Connected: ${_currentDeviceConnected ?? "NULL/EMPTY"}');
-        debugPrint('=====================================');
       } else {
         debugPrint('=== USER DOCUMENT DOES NOT EXIST ===');
         if (mounted) {
@@ -257,15 +266,11 @@ class _DashboardContentState extends State<DashboardContent> {
         }
       }
     } catch (e) {
-      debugPrint('=== ERROR FETCHING USER DATA ===');
-      debugPrint('Error: $e');
-      debugPrint('Stack trace: ${StackTrace.current}');
+      debugPrint('Error fetching user data: $e');
       if (mounted) {
         setState(() {
-          _userName = "Error loading data";
+          _userName = "Error";
           _userEmail = "Please try again";
-          _deviceId = "N/A";
-          _memberSince = "N/A";
           _isLoadingUser = false;
         });
       }
@@ -496,12 +501,20 @@ class _DashboardContentState extends State<DashboardContent> {
                               children: [
                                 CircleAvatar(
                                   radius: 50,
-                                  backgroundColor: Colors.blue.shade100,
+                                  backgroundColor: const Color(0xFF2962FF), // Solid blue
                                   backgroundImage: _userProfileUrl != null 
                                       ? NetworkImage(_userProfileUrl!) 
                                       : null,
+                                  // --- UPDATED: Show Initials if no photo ---
                                   child: _userProfileUrl == null 
-                                      ? const Icon(Icons.person, size: 50, color: Colors.blue) 
+                                      ? Text(
+                                          _getInitials(_userName),
+                                          style: const TextStyle(
+                                            fontSize: 32, 
+                                            fontWeight: FontWeight.bold, 
+                                            color: Colors.white
+                                          ),
+                                        ) 
                                       : null,
                                 ),
                                 Container(
@@ -722,16 +735,22 @@ class _DashboardContentState extends State<DashboardContent> {
                   children: [
                     Text("My Laundry", style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
                     SizedBox(height: 4),
-                    Text("System Active • Auto Mode", style: TextStyle(fontSize: 14, color: Color(0xFF5A6175), fontWeight: FontWeight.w500)),
+                    Text("System Dashboard", style: TextStyle(fontSize: 14, color: Color(0xFF5A6175), fontWeight: FontWeight.w500)),
                   ],
                 ),
                 GestureDetector(
                   onTap: _showAccountModal, 
                   child: CircleAvatar(
                     radius: 24,
-                    backgroundColor: Colors.blue.shade100,
+                    backgroundColor: const Color(0xFF2962FF), // Darker Blue Background
                     backgroundImage: _userProfileUrl != null ? NetworkImage(_userProfileUrl!) : null,
-                    child: _userProfileUrl == null ? const Icon(Icons.person, color: Color(0xFF2762EA)) : null,
+                    // --- UPDATED: Show Initials here too ---
+                    child: _userProfileUrl == null 
+                      ? Text(
+                          _getInitials(_userName), // Use the helper
+                          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                        ) 
+                      : null,
                   ),
                 ),
               ],

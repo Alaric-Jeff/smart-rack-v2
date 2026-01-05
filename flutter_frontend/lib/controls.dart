@@ -33,7 +33,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
 
   Future<void> _sendToESP32(String component, dynamic value) async {
     // TODO: Add HTTP request logic here
-    // Example: await http.get(Uri.parse('http://192.168.1.45/$component/$value'));
     debugPrint("Sending to ESP32 -> Component: $component | Value: $value");
   }
 
@@ -106,9 +105,8 @@ class _ControlsScreenState extends State<ControlsScreen> {
                     isOn: _isRodExtended,
                     icon: Icons.height,
                     activeColor: const Color(0xFF2962FF), // Blue
-                    isDisabled: _isDryingSystemOn, // <--- NEW: Disabled when Heater/Fan is ON
+                    isDisabled: _isDryingSystemOn, // Disabled when Heater/Fan is ON
                     onTap: () {
-                      // SAFETY CHECK 1: Prevent Rod Movement if Drying is ON
                       if (_isDryingSystemOn) {
                         ScaffoldMessenger.of(context).showSnackBar(
                           const SnackBar(
@@ -117,7 +115,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
                             duration: Duration(seconds: 2),
                           ),
                         );
-                        return; // Stop execution
+                        return;
                       }
 
                       _showConfirmation(
@@ -140,9 +138,8 @@ class _ControlsScreenState extends State<ControlsScreen> {
                     isOn: _isDryingSystemOn,
                     icon: Icons.wb_sunny,
                     activeColor: const Color(0xFFFF6D00), // Orange
-                    isDisabled: _isRodExtended, // <--- DISABLED if Rod is Extended
+                    isDisabled: _isRodExtended, // Disabled if Rod is Extended
                     onTap: () {
-                      // SAFETY CHECK 2: Prevent Drying if Rod is Extended
                       if (_isRodExtended) {
                         ScaffoldMessenger.of(context).showSnackBar(
                           const SnackBar(
@@ -151,7 +148,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
                             duration: Duration(seconds: 2),
                           ),
                         );
-                        return; // Stop execution
+                        return;
                       }
 
                       _showConfirmation(
@@ -172,17 +169,19 @@ class _ControlsScreenState extends State<ControlsScreen> {
 
               const SizedBox(height: 24),
 
-              // --- SAFETY WRAPPER FOR FAN OPTIONS ---
-              // If Rod is Extended, these sections become semi-transparent and unclickable
+              // --- LOGIC CHANGE HERE ---
+              // These options are now locked UNLESS the drying system is ON.
               Opacity(
-                opacity: _isRodExtended ? 0.5 : 1.0,
+                // If Drying System is OFF, opacity is 0.5 (faded). If ON, it's 1.0 (clear).
+                opacity: _isDryingSystemOn ? 1.0 : 0.5, 
                 child: AbsorbPointer(
-                  absorbing: _isRodExtended, // Blocks touch if true
+                  // If Drying System is OFF (!true), absorbing is true (blocking clicks).
+                  absorbing: !_isDryingSystemOn, 
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       // --- 2. Fan Timer Selection ---
-                      const Text("Fan Timer", style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
+                      const Text("Timer", style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
                       const SizedBox(height: 12),
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -197,7 +196,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
                       const SizedBox(height: 24),
 
                       // --- 3. Fan Mode Selection ---
-                      const Text("Fan Mode", style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
+                      const Text("Modes", style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
                       const SizedBox(height: 12),
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -269,9 +268,8 @@ class _ControlsScreenState extends State<ControlsScreen> {
     required IconData icon,
     required Color activeColor,
     required VoidCallback onTap,
-    bool isDisabled = false, // NEW: Handles locked state
+    bool isDisabled = false, 
   }) {
-    // Colors change based on disabled state
     final Color bgColor = isDisabled ? Colors.grey.shade300 : (isOn ? activeColor : Colors.white);
     final Color iconBgColor = isDisabled ? Colors.grey.shade400 : (isOn ? Colors.white.withOpacity(0.2) : const Color(0xFFF5F6FA));
     final Color contentColor = isDisabled ? Colors.grey.shade500 : (isOn ? Colors.white : const Color(0xFF1E2339));
