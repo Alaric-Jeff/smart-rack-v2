@@ -179,19 +179,36 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
       if (shouldSignOut != true) return;
 
-      // Check if user signed in with Google before trying to sign out
+      // Get current user to check sign-in method
       final user = _auth.currentUser;
+      
       if (user != null) {
+        // Check if user signed in with Google SSO
         bool isGoogleSignIn = user.providerData.any(
           (provider) => provider.providerId == 'google.com'
         );
         
+        // Only sign out from Google if user actually signed in with Google
+        // and Google Sign-In is properly configured (has client ID)
         if (isGoogleSignIn) {
-          await GoogleSignIn().signOut();
-          debugPrint('Signed out from Google');
+          try {
+            final googleSignIn = GoogleSignIn();
+            // Check if Google Sign-In is initialized (has client ID)
+            // If signOut() is called without client ID, it will throw an error
+            // So we wrap it in try-catch to handle gracefully
+            await googleSignIn.signOut();
+            debugPrint('Signed out from Google Sign-In');
+          } catch (googleError) {
+            // If Google Sign-In sign out fails (e.g., no client ID configured),
+            // just log it and continue with Firebase Auth sign out
+            debugPrint('Google Sign-In sign out skipped: $googleError');
+          }
+        } else {
+          debugPrint('Manual email/password sign-in detected - skipping Google Sign-In sign out');
         }
       }
 
+      // Always sign out from Firebase Auth (works for both manual and SSO)
       await _auth.signOut();
       debugPrint('Signed out from Firebase Auth');
 
