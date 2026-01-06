@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
+import 'package:flutter/services.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:google_sign_in/google_sign_in.dart';
-// import 'package:flutter_facebook_auth/flutter_facebook_auth.dart'; // COMMENTED OUT - Facebook SSO not included
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'terms_and_condtions.dart';
 
@@ -25,19 +25,14 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
   final TextEditingController _confirmPasswordController = TextEditingController();
+  final TextEditingController _contactNumberController = TextEditingController();
 
   // Firebase Auth & Firestore
   final FirebaseAuth _auth = FirebaseAuth.instance;
-  final FirebaseFirestore _firestore = FirebaseFirestore.instance; // ADD THIS
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   
   // Google Sign In
   final GoogleSignIn _googleSignIn = GoogleSignIn();
-
-  // API Configuration (only for SSO if not in testing mode)
-  static const String _baseUrl = 'http://localhost:3000';
-  
-  // Testing Mode - Set to true to skip backend calls during SSO testing
-  static const bool _testingMode = true;
 
   // Colors
   final Color _backgroundColor = const Color(0xFFF5F5F5);
@@ -53,72 +48,75 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
     _emailController.dispose();
     _passwordController.dispose();
     _confirmPasswordController.dispose();
+    _contactNumberController.dispose();
     super.dispose();
   }
 
-  // ✨ SERVERLESS Manual Signup - Direct Firestore
+  // ✨ Enhanced Manual Signup with Email Verification
   Future<void> _handleSignup() async {
-  if (!_isChecked) {
-    _showSnackBar('You must agree to the Terms and Conditions', Colors.red);
-    return;
-  }
+    if (!_isChecked) {
+      _showSnackBar('Please agree to the Terms and Conditions to continue', Colors.red);
+      return;
+    }
 
-  if (_formKey.currentState!.validate()) {
-    setState(() => _isLoading = true);
+    if (_formKey.currentState!.validate()) {
+      setState(() => _isLoading = true);
 
-    try {
-      // Step 1: Create Firebase Auth user
-      UserCredential userCredential = await _auth.createUserWithEmailAndPassword(
-        email: _emailController.text.trim(),
-        password: _passwordController.text,
-      );
+      try {
+        // Step 1: Create Firebase Auth user
+        UserCredential userCredential = await _auth.createUserWithEmailAndPassword(
+          email: _emailController.text.trim(),
+          password: _passwordController.text,
+        );
 
-      String uuid = userCredential.user!.uid;
+        String uuid = userCredential.user!.uid;
 
-      // Step 2: Create user document in Firestore (SERVERLESS!)
-      await _firestore.collection('users').doc(uuid).set({
-        'uuid': uuid,
-        'firstName': _firstNameController.text.trim(),
-        'lastName': _lastNameController.text.trim(),
-        'displayName': '${_firstNameController.text.trim()} ${_lastNameController.text.trim()}',
-        'email': _emailController.text.trim(),
-        'password': _passwordController.text, // Store hashed in production!
-        'signInProvider': 'manual',
-        'photoUrl': null,
-        'address': null,
-        'contactNumber': null,
-        'devices': [], // Empty array for paired devices
-        'createdAt': FieldValue.serverTimestamp(),
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
+        // Step 2: Send email verification
+        await userCredential.user!.sendEmailVerification();
 
-      if (mounted) {
-        setState(() => _isLoading = false);
-        _showSnackBar('Account created successfully!', Colors.green);
-        
-        // Navigate to home or next screen
-        // Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => HomeScreen()));
-      }
-    }  on FirebaseAuthException catch (e) {
+        // Step 3: Create user document in Firestore with emailVerified flag
+        await _firestore.collection('users').doc(uuid).set({
+          'uuid': uuid,
+          'firstName': _firstNameController.text.trim(),
+          'lastName': _lastNameController.text.trim(),
+          'displayName': '${_firstNameController.text.trim()} ${_lastNameController.text.trim()}',
+          'email': _emailController.text.trim(),
+          'contactNumber': _contactNumberController.text.trim(),
+          'signInProvider': 'manual',
+          'photoUrl': null,
+          'address': null,
+          'devices': [],
+          'emailVerified': false, // Initially false
+          'createdAt': FieldValue.serverTimestamp(),
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+
         if (mounted) {
           setState(() => _isLoading = false);
-          String errorMessage = 'An error occurred';
+          
+          // Show verification dialog
+          _showEmailVerificationDialog(userCredential.user!);
+        }
+      } on FirebaseAuthException catch (e) {
+        if (mounted) {
+          setState(() => _isLoading = false);
+          String errorMessage = 'An error occurred during signup';
           
           switch (e.code) {
             case 'email-already-in-use':
-              errorMessage = 'This email is already registered';
+              errorMessage = 'This email address is already registered. Please use a different email or try logging in.';
               break;
             case 'invalid-email':
-              errorMessage = 'Invalid email address';
+              errorMessage = 'The email address format is invalid. Please check and try again.';
               break;
             case 'weak-password':
-              errorMessage = 'Password is too weak';
+              errorMessage = 'The password provided is too weak. Please use a stronger password.';
               break;
             case 'operation-not-allowed':
-              errorMessage = 'Email/password accounts are not enabled';
+              errorMessage = 'Email/password accounts are currently disabled. Please contact support.';
               break;
             default:
-              errorMessage = e.message ?? 'Signup failed';
+              errorMessage = e.message ?? 'Signup failed. Please try again.';
           }
           _showSnackBar(errorMessage, Colors.red);
         }
@@ -133,13 +131,94 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
             debugPrint('Failed to delete user after Firestore error: $deleteError');
           }
           
-          _showSnackBar('Error creating account: ${e.toString()}', Colors.red);
+          _showSnackBar('An unexpected error occurred. Please try again later.', Colors.red);
         }
       }
     }
   }
 
-  // ✨ SERVERLESS Google Sign Up - Direct Firestore
+  // Email Verification Dialog
+  void _showEmailVerificationDialog(User user) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: Row(
+            children: [
+              Icon(Icons.mark_email_unread, color: _primaryColor, size: 28),
+              const SizedBox(width: 10),
+              const Text('Verify Your Email'),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'We\'ve sent a verification email to:',
+                style: TextStyle(fontSize: 14),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                user.email ?? '',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.bold,
+                  color: _primaryColor,
+                ),
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                'Please check your inbox and click the verification link to activate your account.',
+                style: TextStyle(fontSize: 14),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () async {
+                await user.sendEmailVerification();
+                _showSnackBar('Verification email resent successfully', Colors.green);
+              },
+              child: const Text('Resend Email'),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                // Check verification status
+                await user.reload();
+                User? refreshedUser = _auth.currentUser;
+                
+                if (refreshedUser != null && refreshedUser.emailVerified) {
+                  // Update Firestore
+                  await _firestore.collection('users').doc(refreshedUser.uid).update({
+                    'emailVerified': true,
+                    'updatedAt': FieldValue.serverTimestamp(),
+                  });
+                  
+                  Navigator.of(context).pop();
+                  _showSnackBar('Email verified! Account created successfully.', Colors.green);
+                  
+                  // Navigate to next screen
+                  // Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => HomeScreen()));
+                } else {
+                  _showSnackBar('Email not verified yet. Please check your inbox.', Colors.orange);
+                }
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: _primaryColor,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+              child: const Text('I\'ve Verified'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  // ✨ Enhanced Google Sign Up with Additional Data
   Future<void> _handleGoogleSignUp() async {
     setState(() => _isLoading = true);
 
@@ -148,7 +227,6 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
       final GoogleSignInAccount? googleUser = await _googleSignIn.signIn();
       
       if (googleUser == null) {
-        // User canceled the sign-in
         setState(() => _isLoading = false);
         return;
       }
@@ -168,36 +246,40 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
       if (user != null) {
         String uuid = user.uid;
         
-        // Step 4: Check if user already exists in Firestore
+        // Step 4: Check if user already exists
         DocumentSnapshot existingUser = await _firestore.collection('users').doc(uuid).get();
         
         if (existingUser.exists) {
-          // User already exists - this is a sign-in, not sign-up
           if (mounted) {
             setState(() => _isLoading = false);
             _showSnackBar('Account already exists. Redirecting to login...', Colors.orange);
             
-            // Sign out and redirect to login
             await _auth.signOut();
             await _googleSignIn.signOut();
-            Navigator.pop(context); // Go back to login screen
+            Navigator.pop(context);
           }
           return;
         }
 
-        // Step 5: Create new user document in Firestore (SERVERLESS!)
+        // Step 5: Split display name into first and last name
+        String displayName = user.displayName ?? googleUser.displayName ?? 'Google User';
+        List<String> nameParts = displayName.split(' ');
+        String firstName = nameParts.isNotEmpty ? nameParts[0] : '';
+        String lastName = nameParts.length > 1 ? nameParts.sublist(1).join(' ') : '';
+
+        // Step 6: Create user document with enhanced data
         await _firestore.collection('users').doc(uuid).set({
           'uuid': uuid,
-          'displayName': user.displayName ?? googleUser.displayName ?? 'Google User',
-          'firstName': '',
-          'lastName': '',
+          'displayName': displayName,
+          'firstName': firstName,
+          'lastName': lastName,
           'email': user.email,
-          'password': null,
+          'contactNumber': null,
           'signInProvider': 'google.com',
           'photoUrl': user.photoURL ?? googleUser.photoUrl,
           'address': null,
-          'contactNumber': null,
           'devices': [],
+          'emailVerified': user.emailVerified, // Google emails are pre-verified
           'createdAt': FieldValue.serverTimestamp(),
           'updatedAt': FieldValue.serverTimestamp(),
         });
@@ -208,10 +290,9 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
           
           debugPrint('=== GOOGLE SSO SIGNUP SUCCESS ===');
           debugPrint('UUID: $uuid');
-          debugPrint('Display Name: ${user.displayName ?? googleUser.displayName}');
+          debugPrint('Display Name: $displayName');
           debugPrint('Email: ${user.email}');
-          debugPrint('Photo URL: ${user.photoURL ?? googleUser.photoUrl}');
-          debugPrint('Sign In Provider: google.com');
+          debugPrint('Email Verified: ${user.emailVerified}');
           debugPrint('================================');
           
           // Navigate to home screen
@@ -225,19 +306,19 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
         String errorMessage = 'Google sign-up failed';
         switch (e.code) {
           case 'account-exists-with-different-credential':
-            errorMessage = 'An account already exists with this email using a different sign-in method';
+            errorMessage = 'An account with this email already exists using a different sign-in method. Please try another method.';
             break;
           case 'invalid-credential':
-            errorMessage = 'Invalid credentials. Please try again.';
+            errorMessage = 'Invalid credentials provided. Please try again.';
             break;
           case 'operation-not-allowed':
-            errorMessage = 'Google sign-in is not enabled';
+            errorMessage = 'Google sign-in is currently disabled. Please contact support.';
             break;
           case 'user-disabled':
-            errorMessage = 'This account has been disabled';
+            errorMessage = 'This account has been disabled. Please contact support.';
             break;
           default:
-            errorMessage = e.message ?? 'Google sign-up failed';
+            errorMessage = e.message ?? 'Google sign-up failed. Please try again.';
         }
         
         _showSnackBar(errorMessage, Colors.red);
@@ -246,153 +327,27 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
       if (mounted) {
         setState(() => _isLoading = false);
         
-        // If Firestore write fails, clean up the Auth user
         try {
           await _auth.currentUser?.delete();
           await _googleSignIn.signOut();
         } catch (deleteError) {
-          debugPrint('Failed to delete user after Firestore error: $deleteError');
+          debugPrint('Failed to delete user after error: $deleteError');
         }
         
-        _showSnackBar('Error: ${e.toString()}', Colors.red);
+        _showSnackBar('An unexpected error occurred. Please try again.', Colors.red);
       }
     }
   }
-
-  // ✨ SERVERLESS Facebook Sign Up - Direct Firestore
-  // COMMENTED OUT - Facebook SSO not included for defense
-  /*
-  Future<void> _handleFacebookSignUp() async {
-    setState(() => _isLoading = true);
-
-    try {
-      // Step 1: Sign in with Facebook
-      final LoginResult result = await FacebookAuth.instance.login(
-        permissions: ['email', 'public_profile'],
-      );
-
-      if (result.status == LoginStatus.success) {
-        final AccessToken? accessToken = result.accessToken;
-        
-        if (accessToken != null) {
-          // Step 2: Create Firebase credential
-          final OAuthCredential facebookAuthCredential = 
-              FacebookAuthProvider.credential(accessToken.token);
-
-          // Step 3: Sign in to Firebase
-          UserCredential userCredential = 
-              await _auth.signInWithCredential(facebookAuthCredential);
-          User? user = userCredential.user;
-
-          if (user != null) {
-            String uuid = user.uid;
-            
-            // Step 4: Get user data from Facebook
-            final userData = await FacebookAuth.instance.getUserData();
-            
-            // Step 5: Check if user already exists in Firestore
-            DocumentSnapshot existingUser = await _firestore.collection('users').doc(uuid).get();
-            
-            if (existingUser.exists) {
-              // User already exists - this is a sign-in, not sign-up
-              if (mounted) {
-                setState(() => _isLoading = false);
-                _showSnackBar('Account already exists. Redirecting to login...', Colors.orange);
-                
-                // Sign out and redirect to login
-                await _auth.signOut();
-                await FacebookAuth.instance.logOut();
-                Navigator.pop(context); // Go back to login screen
-              }
-              return;
-            }
-
-            // Step 6: Create new user document in Firestore (SERVERLESS!)
-            await _firestore.collection('users').doc(uuid).set({
-              'uuid': uuid,
-              'displayName': userData['name'] ?? user.displayName ?? 'Facebook User',
-              'firstName': '',
-              'lastName': '',
-              'email': userData['email'] ?? user.email,
-              'password': null,
-              'signInProvider': 'facebook.com',
-              'photoUrl': userData['picture']?['data']?['url'],
-              'address': null,
-              'contactNumber': null,
-              'devices': [],
-              'createdAt': FieldValue.serverTimestamp(),
-              'updatedAt': FieldValue.serverTimestamp(),
-            });
-
-            if (mounted) {
-              setState(() => _isLoading = false);
-              _showSnackBar('Facebook sign-up successful!', Colors.green);
-              
-              debugPrint('=== FACEBOOK SSO SIGNUP SUCCESS ===');
-              debugPrint('UUID: $uuid');
-              debugPrint('Display Name: ${userData['name'] ?? user.displayName}');
-              debugPrint('Email: ${userData['email'] ?? user.email}');
-              debugPrint('Photo URL: ${userData['picture']?['data']?['url']}');
-              debugPrint('Sign In Provider: facebook.com');
-              debugPrint('==================================');
-              
-              // Navigate to home screen
-              // Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => HomeScreen()));
-            }
-          }
-        }
-      } else if (result.status == LoginStatus.cancelled) {
-        setState(() => _isLoading = false);
-        _showSnackBar('Facebook sign-up cancelled', Colors.orange);
-      } else {
-        setState(() => _isLoading = false);
-        _showSnackBar('Facebook sign-up failed: ${result.message}', Colors.red);
-      }
-    } on FirebaseAuthException catch (e) {
-      if (mounted) {
-        setState(() => _isLoading = false);
-        
-        String errorMessage = 'Facebook sign-up failed';
-        switch (e.code) {
-          case 'account-exists-with-different-credential':
-            errorMessage = 'An account already exists with this email using a different sign-in method';
-            break;
-          case 'invalid-credential':
-            errorMessage = 'Invalid credentials. Please try again.';
-            break;
-          case 'operation-not-allowed':
-            errorMessage = 'Facebook sign-in is not enabled';
-            break;
-          case 'user-disabled':
-            errorMessage = 'This account has been disabled';
-            break;
-          default:
-            errorMessage = e.message ?? 'Facebook sign-up failed';
-        }
-        
-        _showSnackBar(errorMessage, Colors.red);
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() => _isLoading = false);
-        
-        // If Firestore write fails, clean up the Auth user
-        try {
-          await _auth.currentUser?.delete();
-          await FacebookAuth.instance.logOut();
-        } catch (deleteError) {
-          debugPrint('Failed to delete user after Firestore error: $deleteError');
-        }
-        
-        _showSnackBar('Error: ${e.toString()}', Colors.red);
-      }
-    }
-  }
-  */
 
   void _showSnackBar(String message, Color color) {
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message), backgroundColor: color, duration: const Duration(seconds: 4)),
+      SnackBar(
+        content: Text(message),
+        backgroundColor: color,
+        duration: const Duration(seconds: 4),
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      ),
     );
   }
 
@@ -443,11 +398,17 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                             label: 'FIRST NAME',
                             hint: 'First',
                             controller: _firstNameController,
+                            inputFormatters: [
+                              FilteringTextInputFormatter.allow(RegExp(r'[a-zA-Z]')),
+                              LengthLimitingTextInputFormatter(50),
+                            ],
                             validator: (value) {
-                              if (value == null || value.isEmpty) return 'Required';
-                              if (value.length < 3) return 'Min 3 chars';
-                              if (value.length > 27) return 'Max 27 chars';
-                              if (!RegExp(r'^[A-Za-z]+$').hasMatch(value)) return 'Letters only';
+                              if (value == null || value.isEmpty) {
+                                return 'First name is required';
+                              }
+                              if (value.length < 3) {
+                                return 'First name must be at least 3 characters';
+                              }
                               return null;
                             },
                           ),
@@ -458,11 +419,17 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                             label: 'LAST NAME',
                             hint: 'Last',
                             controller: _lastNameController,
+                            inputFormatters: [
+                              FilteringTextInputFormatter.allow(RegExp(r'[a-zA-Z]')),
+                              LengthLimitingTextInputFormatter(50),
+                            ],
                             validator: (value) {
-                              if (value == null || value.isEmpty) return 'Required';
-                              if (value.length < 3) return 'Min 3 chars';
-                              if (value.length > 27) return 'Max 27 chars';
-                              if (!RegExp(r'^[A-Za-z]+$').hasMatch(value)) return 'Letters only';
+                              if (value == null || value.isEmpty) {
+                                return 'Last name is required';
+                              }
+                              if (value.length < 3) {
+                                return 'Last name must be at least 3 characters';
+                              }
                               return null;
                             },
                           ),
@@ -478,9 +445,33 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                       controller: _emailController,
                       keyboardType: TextInputType.emailAddress,
                       validator: (value) {
-                        if (value == null || value.isEmpty) return 'Please enter your email';
-                        if (!RegExp(r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$').hasMatch(value)) {
-                          return 'Enter a valid email address';
+                        if (value == null || value.isEmpty) {
+                          return 'Email address is required';
+                        }
+                        if (!RegExp(r'^[\w\.-]+@[\w\.-]+\.\w{2,}$').hasMatch(value)) {
+                          return 'Please enter a valid email address';
+                        }
+                        return null;
+                      },
+                    ),
+                    const SizedBox(height: 12),
+
+                    // Contact Number
+                    _buildLabelAndField(
+                      label: 'CONTACT NUMBER',
+                      hint: '9123456789',
+                      controller: _contactNumberController,
+                      keyboardType: TextInputType.number,
+                      inputFormatters: [
+                        FilteringTextInputFormatter.digitsOnly,
+                        LengthLimitingTextInputFormatter(10),
+                      ],
+                      validator: (value) {
+                        if (value == null || value.isEmpty) {
+                          return 'Contact number is required';
+                        }
+                        if (value.length != 10) {
+                          return 'Contact number must be exactly 10 digits';
                         }
                         return null;
                       },
@@ -495,12 +486,24 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                       isPassword: true,
                       isVisible: _isPasswordVisible,
                       onVisibilityChanged: () => setState(() => _isPasswordVisible = !_isPasswordVisible),
+                      inputFormatters: [
+                        LengthLimitingTextInputFormatter(50),
+                      ],
                       validator: (value) {
-                        if (value == null || value.isEmpty) return 'Password is required';
-                        if (value.length < 8) return 'Min 8 characters';
-                        if (value.length > 50) return 'Max 50 characters';
-                        if (!RegExp(r'^(?=.*[0-9])(?=.*[!@#$%^&*])[A-Za-z0-9!@#$%^&*]+$').hasMatch(value)) {
-                          return 'Must have number & special char';
+                        if (value == null || value.isEmpty) {
+                          return 'Password is required';
+                        }
+                        if (value.length < 8) {
+                          return 'Password must be at least 8 characters long';
+                        }
+                        if (!RegExp(r'[A-Z]').hasMatch(value)) {
+                          return 'Password must contain at least one uppercase letter';
+                        }
+                        if (!RegExp(r'[0-9]').hasMatch(value)) {
+                          return 'Password must contain at least one number';
+                        }
+                        if (!RegExp(r'[!@#$%^&*(),.?":{}|<>]').hasMatch(value)) {
+                          return 'Password must contain at least one special character';
                         }
                         return null;
                       },
@@ -515,15 +518,22 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                       isPassword: true,
                       isVisible: _isPasswordVisible,
                       onVisibilityChanged: () => setState(() => _isPasswordVisible = !_isPasswordVisible),
+                      inputFormatters: [
+                        LengthLimitingTextInputFormatter(50),
+                      ],
                       validator: (value) {
-                        if (value == null || value.isEmpty) return 'Please confirm your password';
-                        if (value != _passwordController.text) return 'Passwords do not match';
+                        if (value == null || value.isEmpty) {
+                          return 'Please confirm your password';
+                        }
+                        if (value != _passwordController.text) {
+                          return 'Passwords do not match';
+                        }
                         return null;
                       },
                     ),
                     const SizedBox(height: 15),
 
-                    // Checkbox & Terms Navigation
+                    // Checkbox & Terms
                     Row(
                       crossAxisAlignment: CrossAxisAlignment.center,
                       children: [
@@ -545,7 +555,7 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                               style: TextStyle(color: _labelColor, fontSize: 13),
                               children: [
                                 TextSpan(
-                                  text: 'Terms and Conditions!',
+                                  text: 'Terms and Conditions',
                                   style: const TextStyle(
                                     color: Colors.blueAccent,
                                     fontWeight: FontWeight.bold,
@@ -583,7 +593,7 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                           elevation: 0,
                         ),
                         child: _isLoading
-                            ? const CircularProgressIndicator(color: Colors.white)
+                            ? const CircularProgressIndicator(color: Colors.white, strokeWidth: 2)
                             : const Text('CREATE ACCOUNT',
                                 style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
                       ),
@@ -605,23 +615,13 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                     ),
                     const SizedBox(height: 15),
 
-                    // SSO Buttons
+                    // Google SSO Button
                     _buildBigSocialButton(
                       "Google", 
                       'assets/google.png', 
                       Icons.g_mobiledata, 
                       _handleGoogleSignUp
                     ),
-                    // COMMENTED OUT - Facebook SSO not included for defense
-                    /*
-                    const SizedBox(height: 10),
-                    _buildBigSocialButton(
-                      "Facebook", 
-                      'assets/facebook.png', 
-                      Icons.facebook, 
-                      _handleFacebookSignUp
-                    ),
-                    */
 
                     const SizedBox(height: 15),
 
@@ -660,6 +660,7 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
     bool isVisible = false,
     VoidCallback? onVisibilityChanged,
     TextInputType? keyboardType,
+    List<TextInputFormatter>? inputFormatters,
   }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -672,6 +673,7 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
           validator: validator,
           obscureText: isPassword ? !isVisible : false,
           keyboardType: keyboardType,
+          inputFormatters: inputFormatters,
           style: TextStyle(color: _textColor, fontSize: 14),
           autovalidateMode: AutovalidateMode.onUserInteraction,
           decoration: InputDecoration(
@@ -700,6 +702,7 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                 borderSide: const BorderSide(color: Colors.red, width: 2)),
             filled: true,
             fillColor: Colors.white,
+            errorMaxLines: 2,
           ),
         ),
       ],
