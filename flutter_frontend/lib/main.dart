@@ -94,7 +94,7 @@ class _LoginPageState extends State<LoginPage> {
         setState(() => _isLoading = false);
         _showSnackBar('Welcome back!', Colors.green);
 
-        // Navigate to home screen
+        // Navigate to home screen11
         Navigator.pushReplacement(
           context,
           MaterialPageRoute(builder: (context) => const HomeScreen()),

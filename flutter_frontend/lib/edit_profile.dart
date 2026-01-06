@@ -37,7 +37,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     _contactNumberController = TextEditingController();
     _addressController = TextEditingController();
 
-    // LIVE UPDATE LISTENERS (For Avatar)
+    // LIVE UPDATE LISTENERS
     _displayNameController.addListener(() { if (mounted) setState(() {}); });
     _firstNameController.addListener(() { if (mounted) setState(() {}); });
     _lastNameController.addListener(() { if (mounted) setState(() {}); });
@@ -55,21 +55,16 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     super.dispose();
   }
 
-  // --- UPDATED AVATAR INITIALS HELPER ---
-  // Priority: Display Name -> First/Last Name -> "U"
+  // --- AVATAR INITIALS HELPER ---
   String _getInitials() {
-    // 1. Try Display Name first
     String display = _displayNameController.text.trim();
     if (display.isNotEmpty) {
       List<String> parts = display.split(RegExp(r'\s+'));
       String first = parts[0][0];
       String last = parts.length > 1 ? parts[1][0] : "";
-      // If display name is just one word (e.g. "Kirby"), return "K"
-      // If "Kirby Gabayno", return "KG"
       return (first + last).toUpperCase();
     }
 
-    // 2. Fallback to First + Last Name
     String first = _firstNameController.text.trim();
     String last = _lastNameController.text.trim();
     String firstLetter = first.isNotEmpty ? first[0] : "";
@@ -96,12 +91,13 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
           _firstNameController.text = data['firstName'] ?? '';
           _lastNameController.text = data['lastName'] ?? '';
           
-          // SMART PHONE NUMBER PARSING
           String rawPhone = data['contactNumber'] ?? '';
           if (rawPhone.startsWith('+63')) {
              _contactNumberController.text = rawPhone.substring(3);
           } else if (rawPhone.startsWith('09')) {
              _contactNumberController.text = rawPhone.substring(1); 
+          } else if (rawPhone.startsWith('0')) {
+             _contactNumberController.text = rawPhone.substring(1);
           } else {
              _contactNumberController.text = rawPhone;
           }
@@ -150,17 +146,11 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       if (user == null) return;
 
       final Map<String, dynamic> updates = {};
-      if (_displayNameController.text.trim().isNotEmpty) updates['displayName'] = _displayNameController.text.trim();
-      if (_firstNameController.text.trim().isNotEmpty) updates['firstName'] = _firstNameController.text.trim();
-      if (_lastNameController.text.trim().isNotEmpty) updates['lastName'] = _lastNameController.text.trim();
-      
-      // SAVE PHONE NUMBER WITH +63 PREFIX
-      if (_contactNumberController.text.trim().isNotEmpty) {
-        updates['contactNumber'] = "+63${_contactNumberController.text.trim()}";
-      }
-      
-      if (_addressController.text.trim().isNotEmpty) updates['address'] = _addressController.text.trim();
-
+      updates['displayName'] = _displayNameController.text.trim();
+      updates['firstName'] = _firstNameController.text.trim();
+      updates['lastName'] = _lastNameController.text.trim();
+      updates['contactNumber'] = "+63${_contactNumberController.text.trim()}";
+      updates['address'] = _addressController.text.trim();
       updates['updatedAt'] = FieldValue.serverTimestamp();
 
       await _firestore.collection('users').doc(user.uid).update(updates);
@@ -178,7 +168,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     }
   }
 
-  // --- PASSWORD LOGIC ---
+  // --- Password & Account Logic (Untouched) ---
   void _changePassword() {
     showDialog(context: context, builder: (context) => _PasswordDialog(
         hasPassword: _hasPassword,
@@ -274,23 +264,13 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                 const Text("Manage Account", style: TextStyle(fontSize: 14, color: Colors.grey)),
                 const SizedBox(height: 30),
 
-                // --- AVATAR (Updated to prioritize Initials) ---
+                // --- AVATAR ---
                 Center(
                   child: Container(
-                    width: 100,
-                    height: 100,
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF2962FF),
-                      shape: BoxShape.circle,
-                      boxShadow: [BoxShadow(color: const Color(0xFF2962FF).withOpacity(0.3), blurRadius: 15, offset: const Offset(0, 5))],
-                    ),
+                    width: 100, height: 100,
+                    decoration: BoxDecoration(color: const Color(0xFF2962FF), shape: BoxShape.circle, boxShadow: [BoxShadow(color: const Color(0xFF2962FF).withOpacity(0.3), blurRadius: 15, offset: const Offset(0, 5))]),
                     alignment: Alignment.center,
-                    // REMOVED logic that checks for _photoUrl. 
-                    // Now strictly uses Initials from the text boxes.
-                    child: Text(
-                      _getInitials(), 
-                      style: const TextStyle(fontSize: 36, fontWeight: FontWeight.bold, color: Colors.white, letterSpacing: 2)
-                    ),
+                    child: Text(_getInitials(), style: const TextStyle(fontSize: 36, fontWeight: FontWeight.bold, color: Colors.white, letterSpacing: 2)),
                   ),
                 ),
                 const SizedBox(height: 30),
@@ -298,35 +278,35 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                 const Text("Personal Information", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                 const SizedBox(height: 20),
 
-                // --- 1. DISPLAY NAME WITH REGEX ---
+                // --- 1. DISPLAY NAME ---
                 _buildTextField(
                   "DISPLAY NAME", 
                   _displayNameController, 
                   validator: (val) {
-                    if (val == null || val.isEmpty) return "Required";
-                    if (val.length < 3) return "Too short (min 3)";
-                    if (val.length > 25) return "Too long (max 25)";
-                    if (!RegExp(r'^[a-zA-Z0-9 ._]+$').hasMatch(val)) {
-                      return "No special symbols allowed";
-                    }
+                    if (val == null || val.trim().isEmpty) return "Cannot be empty";
+                    if (val.length < 3) return "Too short (min 3 chars)";
+                    if (val.length > 25) return "Too long (max 25 chars)";
                     return null;
-                  }
+                  },
+                  // Display name can have numbers/special chars if user wants, but you can restrict it if you prefer.
+                  // I'll leave it flexible, but strict on First/Last Name below.
                 ),
                 const SizedBox(height: 16),
 
-                // --- 2. FIRST & LAST NAME WITH REGEX ---
+                // --- 2. FIRST & LAST NAME (RESTRICTED INPUT) ---
                 Row(
                   children: [
                     Expanded(
                       child: _buildTextField(
                         "FIRST NAME", 
                         _firstNameController, 
+                        // --- RESTRICTION: Only letters, space, dot, hyphen ---
+                        inputFormatters: [
+                          FilteringTextInputFormatter.allow(RegExp(r'[a-zA-Z .-]')), 
+                        ],
                         validator: (val) {
-                          if (val == null || val.isEmpty) return "Required";
+                          if (val == null || val.trim().isEmpty) return "Required";
                           if (val.length < 2) return "Too short";
-                          if (!RegExp(r'^[a-zA-Z .-]+$').hasMatch(val)) {
-                            return "Letters only";
-                          }
                           return null;
                         }
                       )
@@ -336,12 +316,13 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                       child: _buildTextField(
                         "LAST NAME", 
                         _lastNameController, 
+                        // --- RESTRICTION: Only letters, space, dot, hyphen ---
+                        inputFormatters: [
+                          FilteringTextInputFormatter.allow(RegExp(r'[a-zA-Z .-]')),
+                        ],
                         validator: (val) {
-                          if (val == null || val.isEmpty) return "Required";
+                          if (val == null || val.trim().isEmpty) return "Required";
                           if (val.length < 2) return "Too short";
-                          if (!RegExp(r'^[a-zA-Z .-]+$').hasMatch(val)) {
-                            return "Letters only";
-                          }
                           return null;
                         }
                       )
@@ -350,42 +331,31 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                 ),
                 const SizedBox(height: 16),
 
-                // --- 3. PHONE NUMBER (UX OPTIMIZED) ---
+                // --- 3. PHONE NUMBER ---
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     const Text("PHONE NUMBER", style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF5A6175))),
                     const SizedBox(height: 8),
                     Row(
+                      crossAxisAlignment: CrossAxisAlignment.start, 
                       children: [
                         Container(
-                          height: 55,
+                          height: 55, 
                           padding: const EdgeInsets.symmetric(horizontal: 12),
-                          decoration: BoxDecoration(
-                            color: Colors.grey.shade100,
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(color: Colors.black87, width: 1.0),
-                          ),
-                          child: const Center(
-                            child: Text("+63", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.black54)),
-                          ),
+                          decoration: BoxDecoration(color: Colors.grey.shade100, borderRadius: BorderRadius.circular(12), border: Border.all(color: Colors.black87, width: 1.0)),
+                          child: const Center(child: Text("+63", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.black54))),
                         ),
                         const SizedBox(width: 10),
                         Expanded(
                           child: TextFormField(
                             controller: _contactNumberController,
                             keyboardType: TextInputType.phone,
-                            maxLength: 10,
-                            inputFormatters: [
-                              FilteringTextInputFormatter.digitsOnly, 
-                              LengthLimitingTextInputFormatter(10),
-                            ],
+                            inputFormatters: [FilteringTextInputFormatter.digitsOnly, LengthLimitingTextInputFormatter(10)],
+                            autovalidateMode: AutovalidateMode.onUserInteraction,
                             style: const TextStyle(fontWeight: FontWeight.w500, fontSize: 15),
                             decoration: InputDecoration(
-                              counterText: "",
-                              hintText: "9XX XXX XXXX",
-                              filled: true,
-                              fillColor: Colors.white,
+                              hintText: "9XX XXX XXXX", filled: true, fillColor: Colors.white,
                               contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
                               enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Colors.black87, width: 1.5)),
                               focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Color(0xFF2962FF), width: 2)),
@@ -393,7 +363,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                               focusedErrorBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Colors.red, width: 2)),
                             ),
                             validator: (value) {
-                              if (value == null || value.isEmpty) return null; 
+                              if (value == null || value.isEmpty) return "Required"; 
                               if (!value.startsWith('9')) return "Must start with 9"; 
                               if (value.length != 10) return "Must be 10 digits";
                               return null;
@@ -407,15 +377,13 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                 
                 const SizedBox(height: 16),
 
-                // --- 4. ADDRESS (REQUIRED) ---
-                const Text("Address", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                const SizedBox(height: 10),
+                // --- 4. ADDRESS ---
                 _buildTextField(
                   "Street Address", 
                   _addressController,
                   validator: (val) {
-                    if (val == null || val.trim().isEmpty) return "Address is required";
-                    if (val.length > 150) return "Address too long";
+                    if (val == null || val.trim().isEmpty) return "Required";
+                    if (val.length < 5) return "Invalid address";
                     return null;
                   },
                 ),
@@ -451,7 +419,16 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     );
   }
 
-  Widget _buildTextField(String label, TextEditingController controller, {String? Function(String?)? validator}) {
+  // --- UPDATED HELPER WIDGET ---
+  // Now accepts 'inputFormatters' to block characters
+  Widget _buildTextField(
+    String label, 
+    TextEditingController controller, 
+    {
+      String? Function(String?)? validator,
+      List<TextInputFormatter>? inputFormatters, // NEW PARAMETER
+    }
+  ) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -460,6 +437,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
         TextFormField(
           controller: controller,
           validator: validator,
+          inputFormatters: inputFormatters, // PASSED HERE
           autovalidateMode: AutovalidateMode.onUserInteraction,
           decoration: InputDecoration(
             filled: true, fillColor: Colors.white,
