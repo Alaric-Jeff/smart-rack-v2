@@ -48,19 +48,35 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
         child: BottomNavigationBar(
           backgroundColor: Colors.white,
-          type: BottomNavigationBarType.fixed,
+          type: BottomNavigationBarType.fixed, // Ensures 4 items fit evenly
           selectedItemColor: const Color(0xFF2962FF),
           unselectedItemColor: Colors.grey,
           showUnselectedLabels: true,
+          
+          // --- FIXED: Lock font size so text doesn't jump ---
+          selectedFontSize: 11,
+          unselectedFontSize: 11,
+          
           currentIndex: _selectedIndex,
           onTap: (index) => setState(() => _selectedIndex = index),
           items: const [
-            BottomNavigationBarItem(icon: Icon(Icons.home_filled), label: "HOME"),
-            BottomNavigationBarItem(icon: Icon(Icons.tune), label: "CONTROLS"),
             BottomNavigationBarItem(
-                icon: Icon(Icons.notifications_outlined), label: "NOTIFICATIONS"),
+              icon: Icon(Icons.home_filled), 
+              label: "HOME"
+            ),
             BottomNavigationBarItem(
-                icon: Icon(Icons.settings_outlined), label: "SETTINGS"),
+              icon: Icon(Icons.tune), 
+              label: "CONTROLS"
+            ),
+            // --- FIXED: Shortened label for better alignment ---
+            BottomNavigationBarItem(
+              icon: Icon(Icons.notifications_outlined), 
+              label: "ALERTS" 
+            ),
+            BottomNavigationBarItem(
+              icon: Icon(Icons.settings_outlined), 
+              label: "SETTINGS"
+            ),
           ],
         ),
       ),
@@ -110,10 +126,7 @@ class _DashboardContentState extends State<DashboardContent> {
   @override
   void initState() {
     super.initState();
-    // 1. Fetch REAL User Data immediately
     _fetchUserData();
-    
-    // 2. Start FAKE Sensor Simulation
     _prefillHistory(); 
     _startSimulation();
   }
@@ -136,7 +149,6 @@ class _DashboardContentState extends State<DashboardContent> {
         Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
         
         setState(() {
-          // Priority: Display Name -> First+Last -> First -> "User"
           if (data['displayName'] != null && data['displayName'].toString().isNotEmpty) {
             _userName = data['displayName'];
           } else if (data['firstName'] != null) {
@@ -148,7 +160,6 @@ class _DashboardContentState extends State<DashboardContent> {
           _userEmail = data['email'] ?? user.email ?? "No Email";
           _userProfileUrl = data['photoUrl'];
           
-          // Format Date
           if (data['createdAt'] != null) {
              DateTime date = (data['createdAt'] as Timestamp).toDate();
              _memberSince = "${_getMonthName(date.month)} ${date.year}";
@@ -320,7 +331,6 @@ class _DashboardContentState extends State<DashboardContent> {
                           children: [
                             _buildInfoRow(Icons.email_outlined, "EMAIL", _userEmail),
                             const Divider(height: 30),
-                            // --- REMOVED CONNECTED DEVICE ROW HERE ---
                             _buildInfoRow(Icons.phone_android, "USER ID", _deviceId),
                             const Divider(height: 30),
                             _buildInfoRow(Icons.calendar_today_outlined, "MEMBER SINCE", _memberSince),
