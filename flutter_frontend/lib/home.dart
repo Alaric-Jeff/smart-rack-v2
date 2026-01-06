@@ -1,9 +1,8 @@
 import 'package:flutter/material.dart';
-import 'dart:convert';
-import 'package:http/http.dart' as http;
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'dart:async';
+import 'dart:math'; 
+import 'package:firebase_auth/firebase_auth.dart'; 
+import 'package:cloud_firestore/cloud_firestore.dart'; 
 import 'controls.dart'; 
 import 'notification.dart';
 import 'settings.dart'; 
@@ -12,7 +11,7 @@ import 'edit_profile.dart';
 // ============================================
 // TOP LEVEL CONFIGURATION
 // ============================================
-const int SENSOR_UPDATE_INTERVAL_SECONDS = 10;
+const int SENSOR_UPDATE_INTERVAL_SECONDS = 3; 
 const int HISTORY_DURATION_MINUTES = 30;
 
 class HomeScreen extends StatefulWidget {
@@ -80,317 +79,150 @@ class DashboardContent extends StatefulWidget {
 }
 
 class _DashboardContentState extends State<DashboardContent> {
+  // Firebase Instances for REAL User Data
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
-  // User data
-  String _userName = "Loading...";
-  String _userEmail = "Loading...";
-  String _deviceId = "N/A";
-  String _memberSince = "Loading...";
-  String? _userProfileUrl;
-  bool _isLoadingUser = true;
-  String? _currentDeviceConnected;
+  // --- REAL USER DATA VARIABLES ---
+  String _userName = "Loading..."; 
+  String _userEmail = "...";
+  String _deviceId = "LD-8D390DC"; // Static Device ID
+  String _memberSince = "...";
+  String? _userProfileUrl; 
 
-  // Weather data
-  String _currentCity = "Locating...";
-  
-  // Sensor data
-  double _sensorHumidity = 0;
-  double _sensorTemperature = 0;
-  double _sensorLight = 0;
-  double _sensorRainIntensity = 0;
-  double _sensorWeight = 2.5; // Template value in kg
-  
-  // Calculated rainfall confidence
-  double _rainConfidence = 0;
+  // --- SIMULATION VARIABLES (FAKE SENSORS) ---
+  double _sensorHumidity = 65.5;
+  double _sensorTemperature = 28.5;
+  double _sensorLight = 850.0;
+  double _sensorRainIntensity = 4095; // 4095 = Dry
+  double _rainConfidence = 0.0;
 
-  // Time-series history (client-side, last 30 minutes)
+  // History Lists for Charts
   final List<SensorDataPoint> _humidityHistory = [];
   final List<SensorDataPoint> _tempHistory = [];
   final List<SensorDataPoint> _lightHistory = [];
   final List<SensorDataPoint> _rainHistory = [];
   final List<SensorDataPoint> _rainConfidenceHistory = [];
-  final List<SensorDataPoint> _weightHistory = [];
-  final List<double> _weatherHistory = [];
 
-  Timer? _sensorUpdateTimer;
-  StreamSubscription<DocumentSnapshot>? _sensorSubscription;
+  Timer? _simulationTimer;
+  final Random _random = Random();
 
   @override
   void initState() {
     super.initState();
+    // 1. Fetch REAL User Data immediately
     _fetchUserData();
-    _fetchWeather();
-    _startSensorUpdates();
+    
+    // 2. Start FAKE Sensor Simulation
+    _prefillHistory(); 
+    _startSimulation();
   }
 
   @override
   void dispose() {
-    _sensorUpdateTimer?.cancel();
-    _sensorSubscription?.cancel();
+    _simulationTimer?.cancel();
     super.dispose();
   }
 
-  void _startSensorUpdates() {
-    // Start periodic updates
-    _sensorUpdateTimer = Timer.periodic(
-      Duration(seconds: SENSOR_UPDATE_INTERVAL_SECONDS),
-      (_) => _fetchSensorData(),
-    );
-    // Fetch immediately
-    _fetchSensorData();
-  }
-
-  // --- NEW: Helper to extract initials from name ---
-  String _getInitials(String name) {
-    if (name.isEmpty || name == "Loading...") return "";
-    List<String> nameParts = name.trim().split(RegExp(r'\s+')); // Split by whitespace
-    if (nameParts.isEmpty) return "U";
-    
-    String first = nameParts[0].isNotEmpty ? nameParts[0][0] : "";
-    String last = nameParts.length > 1 && nameParts[1].isNotEmpty ? nameParts[1][0] : "";
-    
-    String initials = (first + last).toUpperCase();
-    return initials.isEmpty ? "U" : initials;
-  }
-
-  // --- 3. FETCH USER DATA FROM FIRESTORE ---
+  // --- REAL: FETCH USER FROM FIREBASE ---
   Future<void> _fetchUserData() async {
+    User? user = _auth.currentUser;
+    if (user == null) return;
+
     try {
-      setState(() => _isLoadingUser = true);
-
-      User? currentUser = _auth.currentUser;
-      if (currentUser == null) {
-        debugPrint('=== NO USER LOGGED IN ===');
-        if (mounted) {
-          setState(() {
-            _userName = "Guest";
-            _userEmail = "Not logged in";
-            _deviceId = "N/A";
-            _memberSince = "N/A";
-            _isLoadingUser = false;
-          });
-        }
-        return;
-      }
-
-      debugPrint('=== FETCHING USER DATA ===');
-      debugPrint('User UID: ${currentUser.uid}');
-
-      DocumentSnapshot userDoc = await _firestore
-          .collection('users')
-          .doc(currentUser.uid)
-          .get();
-
-      if (userDoc.exists) {
-        Map<String, dynamic> userData = userDoc.data() as Map<String, dynamic>;
-
-        // Debug: Print entire userData
-        debugPrint('=== USER DOCUMENT DATA ===');
-        debugPrint('Full userData: $userData');
+      DocumentSnapshot doc = await _firestore.collection('users').doc(user.uid).get();
+      
+      if (doc.exists) {
+        Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
         
-        // Check if field exists
-        if (userData.containsKey('currentDeviceConnected')) {
-          debugPrint('Field "currentDeviceConnected" EXISTS');
-          debugPrint('Value: ${userData['currentDeviceConnected']}');
-          debugPrint('Type: ${userData['currentDeviceConnected'].runtimeType}');
-        } else {
-          debugPrint('Field "currentDeviceConnected" DOES NOT EXIST in document');
-          debugPrint('Available fields: ${userData.keys.toList()}');
-        }
-
-        // Try different possible field names
-        _currentDeviceConnected = userData['currentDeviceConnected'] as String?;
-        
-        // Fallback to 'devices' array if currentDeviceConnected is null
-        if (_currentDeviceConnected == null || _currentDeviceConnected!.isEmpty) {
-          debugPrint('currentDeviceConnected is null/empty, checking devices array...');
-          if (userData.containsKey('devices') && userData['devices'] is List) {
-            List devices = userData['devices'] as List;
-            if (devices.isNotEmpty) {
-              _currentDeviceConnected = devices[0].toString();
-              debugPrint('Using first device from array: $_currentDeviceConnected');
-            }
-          }
-        }
-
-        String? displayName = userData['displayName'];
-        String? firstName = userData['firstName'];
-        String? lastName = userData['lastName'];
-        String email = userData['email'] ?? currentUser.email ?? 'No email';
-        String? photoUrl = userData['photoUrl'];
-        Timestamp? createdAt = userData['createdAt'];
-
-        String finalDisplayName;
-        if (displayName != null && displayName.isNotEmpty) {
-          finalDisplayName = displayName;
-        } else if (firstName != null && lastName != null) {
-          finalDisplayName = '$firstName $lastName';
-        } else if (firstName != null) {
-          finalDisplayName = firstName;
-        } else {
-          finalDisplayName = 'User';
-        }
-
-        String memberSince = "N/A";
-        if (createdAt != null) {
-          DateTime date = createdAt.toDate();
-          memberSince = "${_getMonthName(date.month)} ${date.year}";
-        }
-
-        // Device ID - you can customize this logic
-        String deviceId = "LD-${currentUser.uid.substring(0, 8).toUpperCase()}";
-
-        if (mounted) {
-          setState(() {
-            _userName = finalDisplayName;
-            _userEmail = email;
-            _deviceId = deviceId;
-            _memberSince = memberSince;
-            _userProfileUrl = photoUrl;
-            _isLoadingUser = false;
-          });
-        }
-      } else {
-        debugPrint('=== USER DOCUMENT DOES NOT EXIST ===');
-        if (mounted) {
-          setState(() {
-            _userName = currentUser.displayName ?? 'User';
-            _userEmail = currentUser.email ?? 'No email';
-            _deviceId = "LD-${currentUser.uid.substring(0, 8).toUpperCase()}";
-            _memberSince = "Recently";
-            _userProfileUrl = currentUser.photoURL;
-            _isLoadingUser = false;
-          });
-        }
-      }
-    } catch (e) {
-      debugPrint('Error fetching user data: $e');
-      if (mounted) {
         setState(() {
-          _userName = "Error";
-          _userEmail = "Please try again";
-          _isLoadingUser = false;
+          // Priority: Display Name -> First+Last -> First -> "User"
+          if (data['displayName'] != null && data['displayName'].toString().isNotEmpty) {
+            _userName = data['displayName'];
+          } else if (data['firstName'] != null) {
+            _userName = "${data['firstName']} ${data['lastName'] ?? ''}";
+          } else {
+            _userName = "User";
+          }
+
+          _userEmail = data['email'] ?? user.email ?? "No Email";
+          _userProfileUrl = data['photoUrl'];
+          
+          // Format Date
+          if (data['createdAt'] != null) {
+             DateTime date = (data['createdAt'] as Timestamp).toDate();
+             _memberSince = "${_getMonthName(date.month)} ${date.year}";
+          } else {
+             _memberSince = "Recently";
+          }
         });
       }
+    } catch (e) {
+      debugPrint("Error fetching user: $e");
     }
   }
 
   String _getMonthName(int month) {
-    const months = [
-      'January', 'February', 'March', 'April', 'May', 'June',
-      'July', 'August', 'September', 'October', 'November', 'December'
-    ];
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
     return months[month - 1];
   }
 
-  Future<void> _fetchSensorData() async {
-    if (_currentDeviceConnected == null || _currentDeviceConnected!.isEmpty) {
-      debugPrint("No device connected for current user");
-      return;
-    }
+  // --- FAKE: SIMULATION LOGIC ---
+  void _startSimulation() {
+    _simulationTimer = Timer.periodic(
+      const Duration(seconds: SENSOR_UPDATE_INTERVAL_SECONDS),
+      (_) => _updateSimulatedData(),
+    );
+  }
 
-    try {
-      // Fetch sensor data from device_sensors/{deviceId}
-      DocumentSnapshot sensorDoc = await _firestore
-          .collection('device_sensors')
-          .doc(_currentDeviceConnected)
-          .get();
+  void _updateSimulatedData() {
+    if (!mounted) return;
+    setState(() {
+      DateTime now = DateTime.now();
+      _sensorHumidity += (_random.nextDouble() * 3) - 1.5;
+      _sensorHumidity = _sensorHumidity.clamp(40.0, 90.0);
 
-      if (sensorDoc.exists) {
-        Map<String, dynamic> sensorData = sensorDoc.data() as Map<String, dynamic>;
-        
-        double humidity = (sensorData['humidity'] ?? 0).toDouble();
-        double temperature = (sensorData['temperature'] ?? 0).toDouble();
-        double light = (sensorData['light'] ?? 0).toDouble();
-        double rainIntensity = (sensorData['rainAO'] ?? 0).toDouble();
+      _sensorTemperature += (_random.nextDouble() * 0.6) - 0.3;
+      _sensorTemperature = _sensorTemperature.clamp(24.0, 35.0);
 
-        // Calculate rainfall confidence
-        double rainConfidence = _calculateRainfallConfidence(
-          humidity: humidity,
-          temperature: temperature,
-          light: light,
-          rainIntensity: rainIntensity,
-        );
+      _sensorLight += (_random.nextInt(100) - 50);
+      _sensorLight = _sensorLight.clamp(0.0, 4000.0);
 
-        DateTime now = DateTime.now();
-        
-        if (mounted) {
-          setState(() {
-            _sensorHumidity = humidity;
-            _sensorTemperature = temperature;
-            _sensorLight = light;
-            _sensorRainIntensity = rainIntensity;
-            _rainConfidence = rainConfidence;
+      _rainConfidence = _calculateRainfallConfidence(
+        humidity: _sensorHumidity,
+        temperature: _sensorTemperature,
+        light: _sensorLight,
+        rainIntensity: _sensorRainIntensity,
+      );
 
-            // Add to history with timestamp
-            _addToHistory(_humidityHistory, humidity, now);
-            _addToHistory(_tempHistory, temperature, now);
-            _addToHistory(_lightHistory, light, now);
-            _addToHistory(_rainHistory, rainIntensity, now);
-            _addToHistory(_rainConfidenceHistory, rainConfidence, now);
-            
-            // Weight template with slight variation
-            double weightVariation = (_sensorWeight * 0.98) + (0.04 * (now.second % 10));
-            _addToHistory(_weightHistory, weightVariation, now);
-            _sensorWeight = weightVariation;
+      _addToHistory(_humidityHistory, _sensorHumidity, now);
+      _addToHistory(_tempHistory, _sensorTemperature, now);
+      _addToHistory(_lightHistory, _sensorLight, now);
+      _addToHistory(_rainHistory, _sensorRainIntensity, now);
+      _addToHistory(_rainConfidenceHistory, _rainConfidence, now);
+      _cleanupOldHistory();
+    });
+  }
 
-            // Clean up old data (older than 30 minutes)
-            _cleanupOldHistory();
-          });
-        }
-
-        debugPrint('=== SENSOR DATA ===');
-        debugPrint('Humidity: $humidity%');
-        debugPrint('Temperature: $temperature°C');
-        debugPrint('Light: $light lux');
-        debugPrint('Rain Intensity: $rainIntensity');
-        debugPrint('Rain Confidence: ${rainConfidence.toStringAsFixed(1)}%');
-      } else {
-        debugPrint('Sensor document not found for device: $_currentDeviceConnected');
-      }
-    } catch (e) {
-      debugPrint('Error fetching sensor data: $e');
+  void _prefillHistory() {
+    DateTime now = DateTime.now();
+    for (int i = 15; i >= 0; i--) {
+      DateTime time = now.subtract(Duration(minutes: i * 2));
+      _addToHistory(_humidityHistory, 65.0 + sin(i)*5, time);
+      _addToHistory(_tempHistory, 28.0 + cos(i)*2, time);
+      _addToHistory(_lightHistory, 800.0 + _random.nextInt(200), time);
+      _addToHistory(_rainConfidenceHistory, 5.0 + _random.nextDouble() * 5, time);
+      _addToHistory(_rainHistory, 4095, time);
     }
   }
 
-  double _calculateRainfallConfidence({
-    required double humidity,
-    required double temperature,
-    required double light,
-    required double rainIntensity,
-  }) {
-    // Weights for each factor
-    const double humidityWeight = 0.35;      // 35%
-    const double temperatureWeight = 0.35;   // 35%
-    const double lightWeight = 0.20;         // 20% (less weight due to artificial light)
-    const double rainIntensityWeight = 0.10; // 10%
-
-    // Normalize values to 0-100 scale
-    
-    // Humidity: Higher humidity = higher rain chance (60-100% is high)
-    double humidityScore = ((humidity - 60) / 40).clamp(0, 1) * 100;
-    
-    // Temperature: Lower temperature = higher rain chance (15-25°C is rain-prone)
-    double tempScore = (1 - ((temperature - 15) / 10).clamp(0, 1)) * 100;
-    
-    // Light: Lower light = higher rain chance (clouds reduce light)
-    // Assuming max light is around 4000 lux for outdoor
-    double lightScore = (1 - (light / 4000).clamp(0, 1)) * 100;
-    
-    // Rain Intensity: Higher value = higher rain chance (0-4095 ADC range)
-    double rainScore = ((4095 - rainIntensity) / 4095) * 100;
-
-    // Calculate weighted confidence
-    double confidence = (
-      (humidityScore * humidityWeight) +
-      (tempScore * temperatureWeight) +
-      (lightScore * lightWeight) +
-      (rainScore * rainIntensityWeight)
-    );
-
-    return confidence.clamp(0, 100);
+  double _calculateRainfallConfidence({required double humidity, required double temperature, required double light, required double rainIntensity}) {
+    double score = 5.0; 
+    if (humidity > 70) score += 20;
+    if (temperature < 26) score += 10;
+    if (light < 500) score += 15;
+    score += _random.nextInt(5); 
+    return score.clamp(0.0, 100.0);
   }
 
   void _addToHistory(List<SensorDataPoint> history, double value, DateTime timestamp) {
@@ -398,65 +230,21 @@ class _DashboardContentState extends State<DashboardContent> {
   }
 
   void _cleanupOldHistory() {
-    DateTime cutoff = DateTime.now().subtract(Duration(minutes: HISTORY_DURATION_MINUTES));
-    
-    _humidityHistory.removeWhere((point) => point.timestamp.isBefore(cutoff));
-    _tempHistory.removeWhere((point) => point.timestamp.isBefore(cutoff));
-    _lightHistory.removeWhere((point) => point.timestamp.isBefore(cutoff));
-    _rainHistory.removeWhere((point) => point.timestamp.isBefore(cutoff));
-    _rainConfidenceHistory.removeWhere((point) => point.timestamp.isBefore(cutoff));
-    _weightHistory.removeWhere((point) => point.timestamp.isBefore(cutoff));
+    if (_humidityHistory.length > 20) _humidityHistory.removeAt(0);
+    if (_tempHistory.length > 20) _tempHistory.removeAt(0);
+    if (_lightHistory.length > 20) _lightHistory.removeAt(0);
+    if (_rainConfidenceHistory.length > 20) _rainConfidenceHistory.removeAt(0);
+    if (_rainHistory.length > 20) _rainHistory.removeAt(0);
   }
 
-  Future<Map<String, dynamic>> _fetchWeather() async {
-    try {
-      final locationResponse = await http.get(Uri.parse('http://ip-api.com/json'));
-      double lat = 14.65;
-      double long = 120.98;
-
-      if (locationResponse.statusCode == 200) {
-        final locData = json.decode(locationResponse.body);
-        lat = locData['lat'];
-        long = locData['lon'];
-        if (mounted) setState(() => _currentCity = locData['city'] ?? "Unknown City");
-      }
-
-      final String url = 'https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$long&current_weather=true';
-      final weatherResponse = await http.get(Uri.parse(url));
-
-      if (weatherResponse.statusCode == 200) {
-        final data = json.decode(weatherResponse.body);
-        final currentWeather = data['current_weather'];
-        final int code = currentWeather['weathercode'];
-        final weatherInfo = _getWeatherInfoFromCode(code);
-
-        if (mounted) {
-          setState(() {
-            _weatherHistory.add(currentWeather['temperature']);
-            if (_weatherHistory.length > 6) _weatherHistory.removeAt(0);
-          });
-        }
-
-        return {
-          "temp": "${currentWeather['temperature'].round()}°",
-          "condition": weatherInfo['condition'],
-          "description": weatherInfo['description'],
-          "icon": weatherInfo['icon'],
-        };
-      } else {
-        throw Exception('Failed');
-      }
-    } catch (e) {
-      return {"temp": "--", "condition": "Offline", "description": "Check internet", "icon": Icons.wifi_off};
-    }
-  }
-
-  Map<String, dynamic> _getWeatherInfoFromCode(int code) {
-    if (code == 0) return {"condition": "Clear", "description": "Sunny skies", "icon": Icons.wb_sunny};
-    if (code >= 1 && code <= 3) return {"condition": "Cloudy", "description": "Partly cloudy", "icon": Icons.cloud};
-    if (code >= 51 && code <= 67) return {"condition": "Rainy", "description": "Rain detected", "icon": Icons.water_drop};
-    if (code >= 95) return {"condition": "Storm", "description": "Thunderstorms", "icon": Icons.thunderstorm};
-    return {"condition": "Rainy", "description": "Showers", "icon": Icons.grain};
+  // --- HELPER: Initials ---
+  String _getInitials(String name) {
+    if (name.isEmpty || name == "Loading...") return "";
+    List<String> nameParts = name.trim().split(RegExp(r'\s+'));
+    if (nameParts.isEmpty) return "U";
+    String first = nameParts[0].isNotEmpty ? nameParts[0][0] : "";
+    String last = nameParts.length > 1 && nameParts[1].isNotEmpty ? nameParts[1][0] : "";
+    return (first + last).toUpperCase();
   }
 
   void _showAccountModal() {
@@ -490,125 +278,97 @@ class _DashboardContentState extends State<DashboardContent> {
               ),
               const Divider(),
               Expanded(
-                child: _isLoadingUser
-                    ? const Center(child: CircularProgressIndicator())
-                    : SingleChildScrollView(
-                        padding: const EdgeInsets.all(24),
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.all(24),
+                  child: Column(
+                    children: [
+                      Stack(
+                        alignment: Alignment.bottomRight,
+                        children: [
+                          CircleAvatar(
+                            radius: 50,
+                            backgroundColor: const Color(0xFF2962FF), 
+                            backgroundImage: _userProfileUrl != null ? NetworkImage(_userProfileUrl!) : null,
+                            child: _userProfileUrl == null 
+                              ? Text(_getInitials(_userName), style: const TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: Colors.white))
+                              : null,
+                          ),
+                          Container(
+                            padding: const EdgeInsets.all(6),
+                            decoration: const BoxDecoration(
+                              color: Colors.white,
+                              shape: BoxShape.circle,
+                              boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 4)],
+                            ),
+                            child: const Icon(Icons.edit, size: 16, color: Colors.grey),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 16),
+                      Text(_userName, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
+                      const SizedBox(height: 4),
+                      Text(_userEmail, style: TextStyle(fontSize: 14, color: Colors.grey[600])),
+                      const SizedBox(height: 32),
+                      
+                      Container(
+                        padding: const EdgeInsets.all(20),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF8F9FB),
+                          borderRadius: BorderRadius.circular(20),
+                        ),
                         child: Column(
                           children: [
-                            Stack(
-                              alignment: Alignment.bottomRight,
-                              children: [
-                                CircleAvatar(
-                                  radius: 50,
-                                  backgroundColor: const Color(0xFF2962FF), // Solid blue
-                                  backgroundImage: _userProfileUrl != null 
-                                      ? NetworkImage(_userProfileUrl!) 
-                                      : null,
-                                  // --- UPDATED: Show Initials if no photo ---
-                                  child: _userProfileUrl == null 
-                                      ? Text(
-                                          _getInitials(_userName),
-                                          style: const TextStyle(
-                                            fontSize: 32, 
-                                            fontWeight: FontWeight.bold, 
-                                            color: Colors.white
-                                          ),
-                                        ) 
-                                      : null,
-                                ),
-                                Container(
-                                  padding: const EdgeInsets.all(6),
-                                  decoration: const BoxDecoration(
-                                    color: Colors.white,
-                                    shape: BoxShape.circle,
-                                    boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 4)],
-                                  ),
-                                  child: const Icon(Icons.edit, size: 16, color: Colors.grey),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 16),
-                            
-                            Text(_userName, 
-                                style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
-                            const SizedBox(height: 4),
-                            Text(_userEmail, 
-                                style: TextStyle(fontSize: 14, color: Colors.grey[600])),
-                            
-                            const SizedBox(height: 32),
-
-                            Align(
-                              alignment: Alignment.centerLeft,
-                              child: Text("Account Information", 
-                                style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.grey[800])),
-                            ),
-                            const SizedBox(height: 12),
-                            
-                            Container(
-                              padding: const EdgeInsets.all(20),
-                              decoration: BoxDecoration(
-                                color: const Color(0xFFF8F9FB),
-                                borderRadius: BorderRadius.circular(20),
-                              ),
-                              child: Column(
-                                children: [
-                                  _buildInfoRow(Icons.email_outlined, "EMAIL", _userEmail),
-                                  const Divider(height: 30),
-                                  _buildInfoRow(Icons.router, "CONNECTED DEVICE", _currentDeviceConnected ?? "No device connected"),
-                                  const Divider(height: 30),
-                                  _buildInfoRow(Icons.phone_android, "USER ID", _deviceId),
-                                  const Divider(height: 30),
-                                  _buildInfoRow(Icons.calendar_today_outlined, "MEMBER SINCE", _memberSince),
-                                ],
-                              ),
-                            ),
-
-                            const SizedBox(height: 32),
-
-                            SizedBox(
-                              width: double.infinity,
-                              height: 50,
-                              child: ElevatedButton(
-                                onPressed: () { 
-                                  Navigator.pop(context); 
-                                  Navigator.push(
-                                    context, 
-                                    MaterialPageRoute(builder: (context) => const EditProfileScreen())
-                                  ).then((_) => _fetchUserData()); // Refresh data when coming back
-                                },
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: const Color(0xFF2962FF),
-                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                                ),
-                                child: const Text("EDIT PROFILE", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                              ),
-                            ),
-                            
-                            const SizedBox(height: 12),
-                            
-                            SizedBox(
-                              width: double.infinity,
-                              height: 50,
-                              child: OutlinedButton.icon(
-                                onPressed: () async {
-                                  await _auth.signOut();
-                                  if (mounted) {
-                                    Navigator.pop(context);
-                                  }
-                                }, 
-                                icon: const Icon(Icons.logout, size: 20, color: Colors.black87),
-                                label: const Text("SIGN OUT", style: TextStyle(color: Colors.black87, fontWeight: FontWeight.bold)),
-                                style: OutlinedButton.styleFrom(
-                                  side: BorderSide(color: Colors.grey.shade300),
-                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                                  backgroundColor: const Color(0xFFF5F6FA),
-                                ),
-                              ),
-                            ),
+                            _buildInfoRow(Icons.email_outlined, "EMAIL", _userEmail),
+                            const Divider(height: 30),
+                            // --- REMOVED CONNECTED DEVICE ROW HERE ---
+                            _buildInfoRow(Icons.phone_android, "USER ID", _deviceId),
+                            const Divider(height: 30),
+                            _buildInfoRow(Icons.calendar_today_outlined, "MEMBER SINCE", _memberSince),
                           ],
                         ),
                       ),
+                      const SizedBox(height: 32),
+                      SizedBox(
+                        width: double.infinity,
+                        height: 50,
+                        child: ElevatedButton(
+                          onPressed: () { 
+                            Navigator.pop(context); // Close Modal
+                            Navigator.push(
+                              context, 
+                              MaterialPageRoute(builder: (context) => const EditProfileScreen())
+                            ).then((_) {
+                              _fetchUserData(); 
+                            });
+                          },
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF2962FF),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          ),
+                          child: const Text("EDIT PROFILE", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      SizedBox(
+                        width: double.infinity,
+                        height: 50,
+                        child: OutlinedButton.icon(
+                          onPressed: () async {
+                            await _auth.signOut();
+                            if (mounted) Navigator.pop(context);
+                          }, 
+                          icon: const Icon(Icons.logout, size: 20, color: Colors.black87),
+                          label: const Text("SIGN OUT", style: TextStyle(color: Colors.black87, fontWeight: FontWeight.bold)),
+                          style: OutlinedButton.styleFrom(
+                            side: BorderSide(color: Colors.grey.shade300),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                            backgroundColor: const Color(0xFFF5F6FA),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               ),
             ],
           ),
@@ -632,11 +392,7 @@ class _DashboardContentState extends State<DashboardContent> {
             children: [
               Text(label, style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.grey)),
               const SizedBox(height: 2),
-              Text(
-                value, 
-                style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Color(0xFF1E2339)),
-                overflow: TextOverflow.ellipsis,
-              ),
+              Text(value, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Color(0xFF1E2339)), overflow: TextOverflow.ellipsis),
             ],
           ),
         )
@@ -684,20 +440,16 @@ class _DashboardContentState extends State<DashboardContent> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            const Text("Recent History (Last 30 min)", style: TextStyle(color: Colors.grey, fontSize: 14)),
+                            const Text("Recent History (Simulated)", style: TextStyle(color: Colors.grey, fontSize: 14)),
                             const SizedBox(height: 20),
-                            historyData.isEmpty
-                                ? SizedBox(height: 100, width: double.infinity, child: Center(child: Text("Waiting for sensor data...", style: TextStyle(color: Colors.grey.shade400, fontStyle: FontStyle.italic))))
-                                : SizedBox(height: 150, width: double.infinity, child: CustomPaint(painter: TimeSeriesChartPainter(data: historyData, color: const Color(0xFF2962FF)))),
+                            SizedBox(height: 150, width: double.infinity, child: CustomPaint(painter: TimeSeriesChartPainter(data: historyData, color: const Color(0xFF2962FF)))),
                           ],
                         ),
                       ),
                       const SizedBox(height: 24),
                       const Text("Status", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
                       const SizedBox(height: 8),
-                      Text(
-                          value == "0.0" || value == "0" || _currentDeviceConnected == null ? "Connect your Smart Rack sensors to see real-time status." : statusMsg,
-                          style: const TextStyle(fontSize: 14, color: Color(0xFF5A6175), height: 1.5)),
+                      Text(statusMsg, style: const TextStyle(fontSize: 14, color: Color(0xFF5A6175), height: 1.5)),
                     ],
                   ),
                 ),
@@ -711,14 +463,12 @@ class _DashboardContentState extends State<DashboardContent> {
 
   @override
   Widget build(BuildContext context) {
-    final size = MediaQuery.of(context).size;
-    final double padding = size.width * 0.05;
+    final double padding = MediaQuery.of(context).size.width * 0.05;
 
+    // Helper for Rain Text
     String getRainStatus() {
       if (_sensorRainIntensity > 3500) return "Dry";
-      if (_sensorRainIntensity > 2000) return "Drizzle";
-      if (_sensorRainIntensity > 1000) return "Rain";
-      return "Heavy Rain";
+      return "Rain"; 
     }
 
     return SafeArea(
@@ -742,14 +492,10 @@ class _DashboardContentState extends State<DashboardContent> {
                   onTap: _showAccountModal, 
                   child: CircleAvatar(
                     radius: 24,
-                    backgroundColor: const Color(0xFF2962FF), // Darker Blue Background
+                    backgroundColor: const Color(0xFF2962FF), 
                     backgroundImage: _userProfileUrl != null ? NetworkImage(_userProfileUrl!) : null,
-                    // --- UPDATED: Show Initials here too ---
                     child: _userProfileUrl == null 
-                      ? Text(
-                          _getInitials(_userName), // Use the helper
-                          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-                        ) 
+                      ? Text(_getInitials(_userName), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold))
                       : null,
                   ),
                 ),
@@ -757,53 +503,44 @@ class _DashboardContentState extends State<DashboardContent> {
             ),
             const SizedBox(height: 24),
 
-            // Weather Card
-            FutureBuilder<Map<String, dynamic>>(
-              future: _fetchWeather(),
-              builder: (context, snapshot) {
-                final data = snapshot.data ?? {"temp": "--", "condition": "Loading...", "description": "...", "icon": Icons.wb_sunny};
-                return GestureDetector(
-                  onTap: () => _showDetailModal("Weather", data['temp'], [], "Current weather is optimal."),
-                  child: Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(24),
-                    decoration: BoxDecoration(
-                      gradient: const LinearGradient(colors: [Color(0xFF2962FF), Color(0xFF448AFF)], begin: Alignment.topLeft, end: Alignment.bottomRight),
-                      borderRadius: BorderRadius.circular(24),
-                      boxShadow: [BoxShadow(color: Colors.blue.withOpacity(0.3), blurRadius: 20, offset: const Offset(0, 10))],
-                    ),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            // --- STATIC WEATHER CARD ---
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(24),
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(colors: [Color(0xFF2962FF), Color(0xFF448AFF)], begin: Alignment.topLeft, end: Alignment.bottomRight),
+                borderRadius: BorderRadius.circular(24),
+                boxShadow: [BoxShadow(color: Colors.blue.withOpacity(0.3), blurRadius: 20, offset: const Offset(0, 10))],
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                                decoration: BoxDecoration(color: Colors.white.withOpacity(0.2), borderRadius: BorderRadius.circular(20)),
-                                child: Row(mainAxisSize: MainAxisSize.min, children: [const Icon(Icons.location_on, color: Colors.white, size: 12), const SizedBox(width: 4), Text(_currentCity, style: const TextStyle(color: Colors.white, fontSize: 12))]),
-                              ),
-                              const SizedBox(height: 12),
-                              Text(data['condition'], style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold)),
-                              const SizedBox(height: 6),
-                              Text(data['description'], style: TextStyle(color: Colors.white.withOpacity(0.9), fontSize: 13, height: 1.4)),
-                              const SizedBox(height: 10),
-                              Text(data['temp'], style: const TextStyle(color: Colors.white, fontSize: 32, fontWeight: FontWeight.bold)),
-                            ],
-                          ),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                          decoration: BoxDecoration(color: Colors.white.withOpacity(0.2), borderRadius: BorderRadius.circular(20)),
+                          child: const Row(mainAxisSize: MainAxisSize.min, children: [Icon(Icons.location_on, color: Colors.white, size: 12), SizedBox(width: 4), Text("Quezon City", style: TextStyle(color: Colors.white, fontSize: 12))]),
                         ),
-                        Icon(data['icon'], size: 60, color: Colors.yellowAccent),
+                        const SizedBox(height: 12),
+                        const Text("Sunny", style: TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold)),
+                        const SizedBox(height: 6),
+                        Text("Clear skies, perfect for drying", style: TextStyle(color: Colors.white.withOpacity(0.9), fontSize: 13, height: 1.4)),
+                        const SizedBox(height: 10),
+                        const Text("31°", style: TextStyle(color: Colors.white, fontSize: 32, fontWeight: FontWeight.bold)),
                       ],
                     ),
                   ),
-                );
-              },
+                  const Icon(Icons.wb_sunny, size: 60, color: Colors.yellowAccent),
+                ],
+              ),
             ),
 
             const SizedBox(height: 24),
 
-            // Sensor Cards Grid
+            // --- SENSOR CARDS ---
             GridView.count(
               crossAxisCount: 2,
               shrinkWrap: true,
@@ -818,7 +555,7 @@ class _DashboardContentState extends State<DashboardContent> {
                   icon: Icons.water_drop_outlined, 
                   color: Colors.green, 
                   bgColor: const Color(0xFFE8F5E9), 
-                  onTap: () => _showDetailModal("Humidity", "${_sensorHumidity.toStringAsFixed(1)}%", _humidityHistory, "Humidity is optimal for drying.")
+                  onTap: () => _showDetailModal("Humidity", "${_sensorHumidity.toStringAsFixed(1)}%", _humidityHistory, "Humidity is fluctuating slightly.")
                 ),
                 _buildSensorCard(
                   title: "Temperature", 
@@ -826,22 +563,22 @@ class _DashboardContentState extends State<DashboardContent> {
                   icon: Icons.thermostat, 
                   color: Colors.blue, 
                   bgColor: const Color(0xFFE3F2FD), 
-                  onTap: () => _showDetailModal("Temperature", "${_sensorTemperature.toStringAsFixed(1)}°C", _tempHistory, "Temperature is good for drying.")
+                  onTap: () => _showDetailModal("Temperature", "${_sensorTemperature.toStringAsFixed(1)}°C", _tempHistory, "Temperature is optimal.")
                 ),
                 _buildSensorCard(
                   title: "Rain Sensor", 
                   value: getRainStatus(), 
-                  subtitle: _sensorRainIntensity > 3000 ? "Safe" : "Alert", 
+                  subtitle: "No Rain", 
                   icon: Icons.cloud_outlined, 
-                  color: _sensorRainIntensity > 3000 ? Colors.green : Colors.orange, 
-                  bgColor: const Color(0xFFE8F5E9), 
-                  onTap: () => _showDetailModal("Rain Sensor", getRainStatus(), _rainHistory, "Current rain intensity: ${_sensorRainIntensity.toStringAsFixed(0)}")
+                  color: Colors.orange, 
+                  bgColor: const Color(0xFFFFF3E0), 
+                  onTap: () => _showDetailModal("Rain Sensor", getRainStatus(), _rainHistory, "Sensor is dry.")
                 ),
                 _buildCircleProgressCard(
                   title: "Rain Chance", 
                   percentage: _rainConfidence.toInt(), 
                   icon: Icons.thunderstorm_outlined, 
-                  onTap: () => _showDetailModal("Rain Chance", "${_rainConfidence.toInt()}%", _rainConfidenceHistory, "Calculated based on humidity, temperature, light, and rain sensor.")
+                  onTap: () => _showDetailModal("Rain Chance", "${_rainConfidence.toInt()}%", _rainConfidenceHistory, "Low chance of rain calculated.")
                 ),
                 _buildSensorCard(
                   title: "Ambient Light", 
@@ -849,17 +586,7 @@ class _DashboardContentState extends State<DashboardContent> {
                   icon: Icons.wb_sunny_outlined, 
                   color: Colors.orange, 
                   bgColor: const Color(0xFFFFF3E0), 
-                  onTap: () => _showDetailModal("Ambient Light", "${_sensorLight.toStringAsFixed(0)} lux", _lightHistory, "Good sunlight for drying.")
-                ),
-                _buildSensorCard(
-                  title: "Load Weight", 
-                  value: "${_sensorWeight.toStringAsFixed(2)} kg", 
-                  subtitle: _sensorWeight > 0 ? "Drying..." : "", 
-                  icon: Icons.scale_outlined, 
-                  color: Colors.indigo, 
-                  bgColor: const Color(0xFFE8EAF6), 
-                  showChip: _sensorWeight > 0, 
-                  onTap: () => _showDetailModal("Load Weight", "${_sensorWeight.toStringAsFixed(2)} kg", _weightHistory, "Weight is decreasing as clothes dry.")
+                  onTap: () => _showDetailModal("Ambient Light", "${_sensorLight.toStringAsFixed(0)} lux", _lightHistory, "Good sunlight.")
                 ),
               ],
             ),
@@ -877,7 +604,6 @@ class _DashboardContentState extends State<DashboardContent> {
     required IconData icon, 
     required Color color, 
     required Color bgColor, 
-    bool showChip = false, 
     required VoidCallback onTap
   }) {
     return GestureDetector(
@@ -888,35 +614,17 @@ class _DashboardContentState extends State<DashboardContent> {
           color: Colors.white, 
           borderRadius: BorderRadius.circular(20),
           boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.05),
-              blurRadius: 10,
-              offset: const Offset(0, 4),
-            )
+            BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, 4))
           ],
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween, 
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(8), 
-                  decoration: BoxDecoration(color: bgColor, shape: BoxShape.circle), 
-                  child: Icon(icon, color: color, size: 20)
-                ), 
-                if (showChip) 
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4), 
-                    decoration: BoxDecoration(
-                      color: Colors.blue.withOpacity(0.1), 
-                      borderRadius: BorderRadius.circular(10)
-                    ), 
-                    child: const Text("Drying...", style: TextStyle(fontSize: 10, color: Colors.blue, fontWeight: FontWeight.bold))
-                  )
-              ]
-            ),
+            Container(
+              padding: const EdgeInsets.all(8), 
+              decoration: BoxDecoration(color: bgColor, shape: BoxShape.circle), 
+              child: Icon(icon, color: color, size: 20)
+            ), 
             const Spacer(),
             Text(value, style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
             if (subtitle != null && subtitle.isNotEmpty) ...[
@@ -944,13 +652,7 @@ class _DashboardContentState extends State<DashboardContent> {
         decoration: BoxDecoration(
           color: Colors.white, 
           borderRadius: BorderRadius.circular(20),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.05),
-              blurRadius: 10,
-              offset: const Offset(0, 4),
-            )
-          ],
+          boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, 4))],
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -1016,9 +718,13 @@ class TimeSeriesChartPainter extends CustomPainter {
       ..color = color
       ..style = PaintingStyle.fill;
     
-    // Find min and max values
-    double maxVal = data.map((e) => e.value).reduce((a, b) => a > b ? a : b);
-    double minVal = data.map((e) => e.value).reduce((a, b) => a < b ? a : b);
+    // Find min and max values safely
+    double maxVal = data.first.value;
+    double minVal = data.first.value;
+    for (var point in data) {
+      if (point.value > maxVal) maxVal = point.value;
+      if (point.value < minVal) minVal = point.value;
+    }
     
     if (maxVal == minVal) { 
       maxVal += 1; 
