@@ -7,7 +7,6 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'firebase_options.dart';
 
 import 'signup.dart';
-import 'forgotpass.dart';
 import 'terms_and_condtions.dart';
 import 'home.dart';
 
@@ -330,6 +329,157 @@ class _LoginPageState extends State<LoginPage> {
     );
   }
 
+  // 🔑 Forgot Password Dialog
+  void _showForgotPasswordDialog() {
+    final TextEditingController emailController = TextEditingController();
+    final formKey = GlobalKey<FormState>();
+    bool isProcessing = false;
+
+    showDialog(
+      context: context,
+      builder: (BuildContext dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              title: Row(
+                children: [
+                  Icon(Icons.lock_reset, color: Colors.blue.shade700, size: 28),
+                  const SizedBox(width: 10),
+                  const Text(
+                    'Reset Password',
+                    style: TextStyle(fontSize: 18),
+                  ),
+                ],
+              ),
+              content: Form(
+                key: formKey,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Enter your email address and we\'ll send you a password reset link.',
+                      style: TextStyle(fontSize: 14, color: Colors.black87),
+                    ),
+                    const SizedBox(height: 20),
+                    TextFormField(
+                      controller: emailController,
+                      keyboardType: TextInputType.emailAddress,
+                      decoration: InputDecoration(
+                        labelText: 'Email Address',
+                        hintText: 'Enter your email',
+                        prefixIcon: const Icon(Icons.email_outlined),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                      ),
+                      validator: (v) {
+                        if (v == null || v.isEmpty) return 'Email is required';
+                        if (!RegExp(r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$').hasMatch(v)) {
+                          return 'Enter a valid email';
+                        }
+                        return null;
+                      },
+                    ),
+                    const SizedBox(height: 16),
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.blue.shade50,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.blue.shade200),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(Icons.info_outline, size: 20, color: Colors.blue.shade700),
+                          const SizedBox(width: 8),
+                          const Expanded(
+                            child: Text(
+                              'Check your email inbox for the password reset link.',
+                              style: TextStyle(fontSize: 12),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: isProcessing ? null : () {
+                    Navigator.of(dialogContext).pop();
+                  },
+                  child: const Text('Cancel'),
+                ),
+                ElevatedButton(
+                  onPressed: isProcessing ? null : () async {
+                    if (!formKey.currentState!.validate()) return;
+
+                    setDialogState(() => isProcessing = true);
+
+                    try {
+                      // Send password reset email using Firebase Auth
+                      await _auth.sendPasswordResetEmail(
+                        email: emailController.text.trim(),
+                      );
+
+                      if (mounted) {
+                        Navigator.of(dialogContext).pop();
+                        _showSnackBar(
+                          'Password reset email sent! Check your inbox and follow the instructions.',
+                          Colors.green,
+                        );
+                      }
+                    } on FirebaseAuthException catch (e) {
+                      setDialogState(() => isProcessing = false);
+                      
+                      String errorMessage = 'Failed to send reset email';
+                      switch (e.code) {
+                        case 'user-not-found':
+                          errorMessage = 'No account found with this email address.';
+                          break;
+                        case 'invalid-email':
+                          errorMessage = 'Invalid email address format.';
+                          break;
+                        case 'too-many-requests':
+                          errorMessage = 'Too many requests. Please try again later.';
+                          break;
+                        default:
+                          errorMessage = e.message ?? 'An error occurred. Please try again.';
+                      }
+                      
+                      _showSnackBar(errorMessage, Colors.red);
+                    } catch (e) {
+                      setDialogState(() => isProcessing = false);
+                      _showSnackBar('An unexpected error occurred. Please try again.', Colors.red);
+                      debugPrint('Password reset error: $e');
+                    }
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF2762EA),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                  child: isProcessing
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            color: Colors.white,
+                            strokeWidth: 2,
+                          ),
+                        )
+                      : const Text('Send Reset Link'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
   // Google SSO Login with Email Verification Check
   Future<void> _handleGoogleSignIn() async {
     setState(() => _isLoading = true);
@@ -569,15 +719,7 @@ class _LoginPageState extends State<LoginPage> {
                         Align(
                           alignment: Alignment.centerRight,
                           child: TextButton(
-                            onPressed: () {
-                              Navigator.push(
-                                context,
-                                MaterialPageRoute(
-                                  builder: (_) =>
-                                      const ForgotPasswordScreen(),
-                                ),
-                              );
-                            },
+                            onPressed: _showForgotPasswordDialog,
                             child: const Text('Forgot password?'),
                           ),
                         ),
