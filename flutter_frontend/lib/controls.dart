@@ -31,28 +31,25 @@ class _ControlsScreenState extends State<ControlsScreen> {
   void _calculatePower() {
     int newPower = 2; // Base Idle (WiFi/Standby)
 
-    // 1. Rod Motor (consumes power if extended/holding)
+    // 1. Rod Motor
     if (_isRodExtended) newPower += 5; 
     
     // 2. Drying System Logic
     if (_isDryingSystemOn) {
-      // If a timer is running (Active Drying)
       if (_selectedFanTimer != null) {
-        int heaterPower = 1000; // Base Heater
+        int heaterPower = 1000; 
         int fanPower = 0;
 
-        // Different power for different modes
         switch (_selectedFanMode) {
           case "Low":    fanPower = 100; break;
           case "Med":    fanPower = 250; break;
           case "High":   fanPower = 450; break;
           case "Auto":   fanPower = 300; break;
-          default:       fanPower = 300; // Default if null
+          default:       fanPower = 300; 
         }
         newPower += (heaterPower + fanPower);
         
       } else {
-        // If just ON but not drying (Ready State)
         newPower += 10; // Display + Sensors
       }
     }
@@ -70,10 +67,10 @@ class _ControlsScreenState extends State<ControlsScreen> {
       _isDryingSystemOn = !_isDryingSystemOn;
       
       if (!_isDryingSystemOn) {
-        _stopTimer(); // Kill everything if turned off
+        _stopTimer(); 
       } else {
-        _selectedFanMode = "Auto"; // Default to Auto when turned on
-        _calculatePower(); // Calculate "Ready" power
+        _selectedFanMode = "Auto"; 
+        _calculatePower(); 
       }
     });
     
@@ -82,7 +79,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
 
   // --- HANDLE TIMER PRESS/UNPRESS ---
   void _handleTimerSelection(String duration) {
-    // Unpress Logic (Stop)
     if (_selectedFanTimer == duration) {
       _showConfirmation("Stop Timer", "cancel the current timer", () {
           _stopTimer();
@@ -90,14 +86,13 @@ class _ControlsScreenState extends State<ControlsScreen> {
       return; 
     }
 
-    // Start/Change Logic
     int minutes = int.parse(duration.replaceAll('m', ''));
     int totalSeconds = minutes * 60;
 
     setState(() {
       _selectedFanTimer = duration; 
       _remainingSeconds = totalSeconds;
-      _calculatePower(); // Update power immediately!
+      _calculatePower(); 
     });
 
     _dryingTimer?.cancel();
@@ -112,11 +107,11 @@ class _ControlsScreenState extends State<ControlsScreen> {
     _sendToESP32("fan_timer", minutes);
   }
 
-  // --- NEW: HANDLE FAN MODE CHANGES ---
+  // --- HANDLE FAN MODE CHANGES ---
   void _handleFanModeSelection(String mode) {
     setState(() {
       _selectedFanMode = mode;
-      _calculatePower(); // Update power immediately when mode changes!
+      _calculatePower(); 
     });
     _sendToESP32("fan_mode", mode.toUpperCase());
   }
@@ -126,7 +121,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
     setState(() {
       _selectedFanTimer = null; 
       _remainingSeconds = 0;
-      _calculatePower(); // Drop power back to "Ready" or "Idle"
+      _calculatePower(); 
     });
     _sendToESP32("drying_status", "STOPPED");
   }
@@ -180,23 +175,30 @@ class _ControlsScreenState extends State<ControlsScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text("Manual Controls", style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
-              const SizedBox(height: 4),
-              const Text("Override automatic settings", style: TextStyle(fontSize: 14, color: Color(0xFF5A6175), fontWeight: FontWeight.w500)),
-              const SizedBox(height: 24),
+              // --- HEADER ---
+              const Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text("Manual Controls", style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
+                  SizedBox(height: 6),
+                  Text("Override automatic settings", style: TextStyle(fontSize: 15, color: Color(0xFF5A6175), fontWeight: FontWeight.w500)),
+                ],
+              ),
+              const SizedBox(height: 28),
 
-              // 1. MAIN TOGGLES
+              // --- 1. MAIN TOGGLES ---
               GridView.count(
                 shrinkWrap: true,
                 physics: const NeverScrollableScrollPhysics(),
                 crossAxisCount: 2, 
                 crossAxisSpacing: 16,
                 mainAxisSpacing: 16,
-                childAspectRatio: 1.0,
+                childAspectRatio: 1.0, // Square cards
                 children: [
                   // ROD CONTROL
                   _buildToggleCard(
-                    title: _isRodExtended ? "Retract Rod" : "Extend Rod",
+                    title: "Extend Rod",
+                    activeTitle: "Retract Rod",
                     isOn: _isRodExtended,
                     icon: Icons.height,
                     activeColor: const Color(0xFF2962FF), 
@@ -216,8 +218,9 @@ class _ControlsScreenState extends State<ControlsScreen> {
                   // DRYING SYSTEM (MASTER POWER)
                   _buildToggleCard(
                     title: "Drying System",
+                    activeTitle: "Drying System",
                     isOn: _isDryingSystemOn,
-                    icon: Icons.wb_sunny,
+                    icon: Icons.wb_sunny_rounded,
                     activeColor: const Color(0xFFFF6D00), 
                     isDisabled: _isRodExtended,
                     onTap: () {
@@ -233,18 +236,18 @@ class _ControlsScreenState extends State<ControlsScreen> {
                 ],
               ),
 
-              const SizedBox(height: 24),
+              const SizedBox(height: 32),
 
-              // 2. SETTINGS (Locked if System OFF)
+              // --- 2. SETTINGS (Locked if System OFF) ---
               Opacity(
-                opacity: _isDryingSystemOn ? 1.0 : 0.4, 
+                opacity: _isDryingSystemOn ? 1.0 : 0.5, 
                 child: AbsorbPointer(
                   absorbing: !_isDryingSystemOn, 
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text("Set Duration", style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
-                      const SizedBox(height: 12),
+                      const Text("Set Duration", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
+                      const SizedBox(height: 16),
                       Row(children: [
                         _buildOptionButton("5m", _selectedFanTimer, (val) => _handleTimerSelection(val)),
                         _buildOptionButton("10m", _selectedFanTimer, (val) => _handleTimerSelection(val)),
@@ -252,8 +255,8 @@ class _ControlsScreenState extends State<ControlsScreen> {
                         _buildOptionButton("30m", _selectedFanTimer, (val) => _handleTimerSelection(val)),
                       ]),
                       const SizedBox(height: 24),
-                      const Text("Fan Mode", style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
-                      const SizedBox(height: 12),
+                      const Text("Fan Mode", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
+                      const SizedBox(height: 16),
                       Row(children: [
                         _buildOptionButton("Auto", _selectedFanMode, (val) => _handleFanModeSelection("Auto")),
                         _buildOptionButton("Low", _selectedFanMode, (val) => _handleFanModeSelection("Low")),
@@ -265,68 +268,73 @@ class _ControlsScreenState extends State<ControlsScreen> {
                 ),
               ),
 
-              const SizedBox(height: 24),
+              const SizedBox(height: 32),
 
-              // 3. SYSTEM STATUS
-              const Text("System Status", style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
-              const SizedBox(height: 12),
+              // --- 3. SYSTEM STATUS DISPLAY ---
+              const Text("System Status", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
+              const SizedBox(height: 16),
               
               Container(
                 width: double.infinity,
-                padding: const EdgeInsets.all(20),
+                padding: const EdgeInsets.all(24),
                 decoration: BoxDecoration(
                   color: Colors.white,
-                  borderRadius: BorderRadius.circular(20),
-                  boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, 4))],
+                  borderRadius: BorderRadius.circular(24),
+                  boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 15, offset: const Offset(0, 5))],
                 ),
                 child: Column(
                   children: [
-                    // DIGITAL DISPLAY
+                    // LCD DISPLAY
                     Container(
                       width: double.infinity,
-                      padding: const EdgeInsets.symmetric(vertical: 24),
+                      padding: const EdgeInsets.symmetric(vertical: 30),
                       decoration: BoxDecoration(
                         color: const Color(0xFF1E2339),
-                        borderRadius: BorderRadius.circular(16),
+                        borderRadius: BorderRadius.circular(20),
                         boxShadow: [
-                          BoxShadow(color: const Color(0xFF1E2339).withOpacity(0.4), blurRadius: 10, offset: const Offset(0, 5)),
+                          BoxShadow(color: const Color(0xFF1E2339).withOpacity(0.4), blurRadius: 10, offset: const Offset(0, 8)),
                         ],
-                        border: Border.all(color: Colors.white.withOpacity(0.1), width: 1),
                       ),
                       child: Column(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
                           Text(
-                            isRunning ? "TIME REMAINING" : (_isDryingSystemOn ? "SELECT TIMER TO START" : "SYSTEM OFF"),
-                            style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1.5),
+                            isRunning ? "TIME REMAINING" : (_isDryingSystemOn ? "SYSTEM READY" : "SYSTEM OFF"),
+                            style: TextStyle(
+                              color: Colors.white.withOpacity(0.6), 
+                              fontSize: 11, 
+                              fontWeight: FontWeight.bold, 
+                              letterSpacing: 2.0
+                            ),
                           ),
-                          const SizedBox(height: 4),
-                          ShaderMask(
-                            shaderCallback: (bounds) => const LinearGradient(
-                              colors: [Colors.white, Color(0xFFE0E0E0)],
-                              begin: Alignment.topCenter,
-                              end: Alignment.bottomCenter,
-                            ).createShader(bounds),
-                            child: Text(
-                              isRunning ? _formatTime(_remainingSeconds) : "--:--",
-                              style: const TextStyle(fontSize: 52, fontWeight: FontWeight.bold, color: Colors.white, fontFamily: 'monospace', letterSpacing: 2.0, height: 1.0),
+                          const SizedBox(height: 8),
+                          // Monospaced Font for the timer
+                          Text(
+                            isRunning ? _formatTime(_remainingSeconds) : "--:--",
+                            style: const TextStyle(
+                              fontSize: 56, 
+                              fontWeight: FontWeight.bold, 
+                              color: Colors.white, 
+                              fontFamily: 'monospace', // Prevents jitter
+                              letterSpacing: 2.0, 
+                              height: 1.0
                             ),
                           ),
                           if (isRunning) ...[
-                             const SizedBox(height: 12),
+                             const SizedBox(height: 16),
                              Container(
-                               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
                                decoration: BoxDecoration(
-                                 color: Colors.green.withOpacity(0.2),
+                                 color: const Color(0xFF00E676).withOpacity(0.2),
                                  borderRadius: BorderRadius.circular(20),
-                                 border: Border.all(color: Colors.green.withOpacity(0.5), width: 1),
+                                 border: Border.all(color: const Color(0xFF00E676), width: 1.5),
                                ),
                                child: const Row(
                                  mainAxisSize: MainAxisSize.min,
                                  children: [
-                                   Icon(Icons.circle, size: 8, color: Colors.green),
-                                   SizedBox(width: 6),
-                                   Text("RUNNING", style: TextStyle(color: Colors.green, fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1))
+                                   Icon(Icons.circle, size: 8, color: Color(0xFF00E676)),
+                                   SizedBox(width: 8),
+                                   Text("RUNNING", style: TextStyle(color: Color(0xFF00E676), fontSize: 11, fontWeight: FontWeight.w800, letterSpacing: 1.2))
                                  ],
                                ),
                              )
@@ -335,42 +343,26 @@ class _ControlsScreenState extends State<ControlsScreen> {
                       ),
                     ),
 
-                    const SizedBox(height: 20),
+                    const SizedBox(height: 24),
 
-                    // Status Text
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        const Text("Activity", style: TextStyle(color: Colors.grey, fontSize: 13)),
-                        Text(
-                          isRunning ? "DRYING" : (_isDryingSystemOn ? "READY" : (_isRodExtended ? "EXTENDED" : "IDLE")), 
-                          style: TextStyle(
-                            color: isRunning ? const Color(0xFFFF6D00) : (_isRodExtended ? const Color(0xFF2962FF) : Colors.grey), 
-                            fontWeight: FontWeight.bold, fontSize: 13
-                          )
-                        ),
-                      ],
+                    // Status Text Rows
+                    _buildStatusRow("Activity", 
+                      isRunning ? "DRYING" : (_isDryingSystemOn ? "READY" : (_isRodExtended ? "EXTENDED" : "IDLE")), 
+                      isRunning ? const Color(0xFFFF6D00) : (_isRodExtended ? const Color(0xFF2962FF) : Colors.grey)
                     ),
-                    const Divider(height: 24),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        const Text("Power Consumption", style: TextStyle(color: Colors.grey, fontSize: 13)),
-                        // ANIMATED POWER TEXT (Optional Visual Touch)
-                        AnimatedSwitcher(
-                          duration: const Duration(milliseconds: 300),
-                          child: Text(
-                            "$_powerConsumption W", 
-                            key: ValueKey<int>(_powerConsumption),
-                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)
-                          ),
-                        ),
-                      ],
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 12),
+                      child: Divider(),
+                    ),
+                    _buildStatusRow("Power Consumption", 
+                      "$_powerConsumption W", 
+                      const Color(0xFF1E2339),
+                      isAnimated: true
                     ),
                   ],
                 ),
               ),
-              const SizedBox(height: 80), 
+              const SizedBox(height: 100), 
             ],
           ),
         ),
@@ -378,32 +370,91 @@ class _ControlsScreenState extends State<ControlsScreen> {
     );
   }
 
-  // --- HELPER: Toggle Cards ---
-  Widget _buildToggleCard({required String title, required bool isOn, required IconData icon, required Color activeColor, required VoidCallback onTap, bool isDisabled = false}) {
-    final Color bgColor = isDisabled ? Colors.grey.shade200 : (isOn ? activeColor : Colors.white);
-    final Color iconBgColor = isDisabled ? Colors.transparent : (isOn ? Colors.white.withOpacity(0.2) : const Color(0xFFF5F6FA));
-    final Color contentColor = isDisabled ? Colors.grey.shade400 : (isOn ? Colors.white : const Color(0xFF1E2339));
+  Widget _buildStatusRow(String label, String value, Color color, {bool isAnimated = false}) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Text(label, style: const TextStyle(color: Colors.grey, fontSize: 13, fontWeight: FontWeight.w500)),
+        isAnimated 
+        ? AnimatedSwitcher(
+            duration: const Duration(milliseconds: 300),
+            child: Text(value, key: ValueKey<String>(value), style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 14)),
+          )
+        : Text(value, style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 14)),
+      ],
+    );
+  }
 
-    return GestureDetector(
-      onTap: onTap,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 200),
-        padding: const EdgeInsets.all(16),
+  // --- WIDGET: Modern Toggle Card ---
+  Widget _buildToggleCard({
+    required String title, 
+    String? activeTitle,
+    required bool isOn, 
+    required IconData icon, 
+    required Color activeColor, 
+    required VoidCallback onTap, 
+    bool isDisabled = false
+  }) {
+    // Colors
+    final Color cardBg = isOn ? activeColor : Colors.white;
+    final Color iconBg = isOn ? Colors.white.withOpacity(0.2) : const Color(0xFFF5F6FA);
+    final Color iconColor = isOn ? Colors.white : const Color(0xFF1E2339);
+    final Color textColor = isOn ? Colors.white : const Color(0xFF1E2339);
+    final Color subTextColor = isOn ? Colors.white.withOpacity(0.7) : Colors.grey;
+
+    if (isDisabled) {
+      return Container(
+        padding: const EdgeInsets.all(20),
         decoration: BoxDecoration(
-          color: bgColor, 
+          color: Colors.grey[100],
           borderRadius: BorderRadius.circular(24),
-          boxShadow: [if(isOn && !isDisabled) BoxShadow(color: activeColor.withOpacity(0.4), blurRadius: 12, offset: const Offset(0, 4))],
-          border: isDisabled ? Border.all(color: Colors.grey.shade300) : null,
+          border: Border.all(color: Colors.grey.shade300),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Container(padding: const EdgeInsets.all(10), decoration: BoxDecoration(color: iconBgColor, shape: BoxShape.circle), child: Icon(icon, color: contentColor, size: 24)),
+            Container(
+              padding: const EdgeInsets.all(12), 
+              decoration: BoxDecoration(color: Colors.grey[200], shape: BoxShape.circle), 
+              child: Icon(icon, color: Colors.grey, size: 24)
+            ),
             Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(isDisabled ? "LOCKED" : (isOn ? "ON" : "OFF"), style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: isDisabled ? Colors.grey.shade400 : (isOn ? Colors.white.withOpacity(0.7) : Colors.grey))),
+              Text("LOCKED", style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.grey[400])),
               const SizedBox(height: 4),
-              Text(title, style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: contentColor)),
+              Text(title, style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.grey[400])),
+            ]),
+          ],
+        ),
+      );
+    }
+
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          color: cardBg,
+          borderRadius: BorderRadius.circular(24),
+          boxShadow: [
+            if(isOn) BoxShadow(color: activeColor.withOpacity(0.4), blurRadius: 12, offset: const Offset(0, 6)),
+            if(!isOn) BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, 4)),
+          ],
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(12), 
+              decoration: BoxDecoration(color: iconBg, shape: BoxShape.circle), 
+              child: Icon(icon, color: iconColor, size: 24)
+            ),
+            Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(isOn ? "ON" : "OFF", style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: subTextColor)),
+              const SizedBox(height: 4),
+              Text(isOn && activeTitle != null ? activeTitle : title, style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: textColor)),
             ]),
           ],
         ),
@@ -411,7 +462,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
     );
   }
 
-  // --- HELPER: Options ---
+  // --- WIDGET: Pill Option Button ---
   Widget _buildOptionButton(String text, String? selectedValue, Function(String) onTap) {
     bool isSelected = selectedValue != null && text == selectedValue;
     return Expanded(
@@ -419,16 +470,24 @@ class _ControlsScreenState extends State<ControlsScreen> {
         onTap: () => onTap(text),
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 200),
-          margin: const EdgeInsets.symmetric(horizontal: 4),
-          padding: const EdgeInsets.symmetric(vertical: 12),
+          margin: const EdgeInsets.symmetric(horizontal: 6),
+          padding: const EdgeInsets.symmetric(vertical: 14),
           decoration: BoxDecoration(
-            color: isSelected ? const Color(0xFF2962FF) : Colors.white,
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: isSelected ? const Color(0xFF2962FF) : Colors.grey.shade200, width: 1.5),
-            boxShadow: isSelected ? [BoxShadow(color: const Color(0xFF2962FF).withOpacity(0.3), blurRadius: 6, offset: const Offset(0, 3))] : [],
+            color: isSelected ? const Color(0xFF2962FF) : Colors.grey[100], // Blue or Light Grey
+            borderRadius: BorderRadius.circular(30), // Pill shape
+            boxShadow: isSelected 
+                ? [BoxShadow(color: const Color(0xFF2962FF).withOpacity(0.3), blurRadius: 8, offset: const Offset(0, 4))] 
+                : [],
           ),
           child: Center(
-            child: Text(text, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: isSelected ? Colors.white : const Color(0xFF1E2339))),
+            child: Text(
+              text, 
+              style: TextStyle(
+                fontSize: 13, 
+                fontWeight: FontWeight.w600, 
+                color: isSelected ? Colors.white : const Color(0xFF5A6175)
+              )
+            ),
           ),
         ),
       ),
