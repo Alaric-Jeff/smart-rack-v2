@@ -11,7 +11,7 @@ import 'edit_profile.dart';
 // ============================================
 // TOP LEVEL CONFIGURATION
 // ============================================
-const int SENSOR_UPDATE_INTERVAL_SECONDS = 3; 
+const int SENSOR_UPDATE_INTERVAL_SECONDS = 10; // Updates every 10 seconds
 const int HISTORY_DURATION_MINUTES = 30;
 
 class HomeScreen extends StatefulWidget {
@@ -53,7 +53,6 @@ class _HomeScreenState extends State<HomeScreen> {
           unselectedItemColor: Colors.grey,
           showUnselectedLabels: true,
           
-          // --- FIXED: Lock font size so text doesn't jump ---
           selectedFontSize: 11,
           unselectedFontSize: 11,
           
@@ -68,7 +67,6 @@ class _HomeScreenState extends State<HomeScreen> {
               icon: Icon(Icons.tune), 
               label: "CONTROLS"
             ),
-            // --- FIXED: Shortened label for better alignment ---
             BottomNavigationBarItem(
               icon: Icon(Icons.notifications_outlined), 
               label: "ALERTS" 
@@ -102,15 +100,21 @@ class _DashboardContentState extends State<DashboardContent> {
   // --- REAL USER DATA VARIABLES ---
   String _userName = "Loading..."; 
   String _userEmail = "...";
-  String _deviceId = "LD-8D390DC"; // Static Device ID
+  final String _deviceId = "LD-8D390DC"; // Static Device ID
   String _memberSince = "...";
   String? _userProfileUrl; 
 
   // --- SIMULATION VARIABLES (FAKE SENSORS) ---
+  // Weather State
+  String _weatherCondition = "Sunny";
+  String _weatherDescription = "Clear skies";
+  IconData _weatherIcon = Icons.wb_sunny;
+  List<Color> _weatherGradient = [const Color(0xFF2962FF), const Color(0xFF448AFF)];
+
   double _sensorHumidity = 65.5;
   double _sensorTemperature = 28.5;
   double _sensorLight = 850.0;
-  double _sensorRainIntensity = 4095; // 4095 = Dry
+  double _sensorRainIntensity = 4095; // 4095 = Dry, < 2000 = Rain
   double _rainConfidence = 0.0;
 
   // History Lists for Charts
@@ -178,8 +182,11 @@ class _DashboardContentState extends State<DashboardContent> {
     return months[month - 1];
   }
 
-  // --- FAKE: SIMULATION LOGIC ---
+  // --- FAKE: DYNAMIC WEATHER SIMULATION LOGIC ---
   void _startSimulation() {
+    // Initial update
+    _updateSimulatedData();
+    
     _simulationTimer = Timer.periodic(
       const Duration(seconds: SENSOR_UPDATE_INTERVAL_SECONDS),
       (_) => _updateSimulatedData(),
@@ -190,22 +197,81 @@ class _DashboardContentState extends State<DashboardContent> {
     if (!mounted) return;
     setState(() {
       DateTime now = DateTime.now();
-      _sensorHumidity += (_random.nextDouble() * 3) - 1.5;
-      _sensorHumidity = _sensorHumidity.clamp(40.0, 90.0);
 
-      _sensorTemperature += (_random.nextDouble() * 0.6) - 0.3;
-      _sensorTemperature = _sensorTemperature.clamp(24.0, 35.0);
+      // 1. Randomly pick a weather condition
+      // 0-3: Sunny/Cloudy (Likely), 4-5: Rain (Less Likely), 6: Storm (Rare)
+      int weatherRoll = _random.nextInt(10); 
+      
+      // Target values based on weather
+      double targetTemp, targetHum, targetLight, targetRain;
 
-      _sensorLight += (_random.nextInt(100) - 50);
-      _sensorLight = _sensorLight.clamp(0.0, 4000.0);
+      if (weatherRoll < 4) { 
+        // SUNNY / CLEAR
+        _weatherCondition = "Sunny";
+        _weatherDescription = "Clear skies, perfect for drying";
+        _weatherIcon = Icons.wb_sunny;
+        _weatherGradient = [const Color(0xFF2962FF), const Color(0xFF448AFF)]; // Blue
+        
+        targetTemp = 30.0 + _random.nextDouble() * 3; // Hot (30-33)
+        targetHum = 50.0 + _random.nextDouble() * 10; // Dry (50-60%)
+        targetLight = 3000.0 + _random.nextDouble() * 1000; // Bright
+        targetRain = 4095; // Dry Sensor
+        _rainConfidence = 5.0 + _random.nextDouble() * 5; // Low chance
 
-      _rainConfidence = _calculateRainfallConfidence(
-        humidity: _sensorHumidity,
-        temperature: _sensorTemperature,
-        light: _sensorLight,
-        rainIntensity: _sensorRainIntensity,
-      );
+      } else if (weatherRoll < 7) {
+        // CLOUDY / OVERCAST
+        _weatherCondition = "Cloudy";
+        _weatherDescription = "Overcast, moderate drying";
+        _weatherIcon = Icons.cloud;
+        _weatherGradient = [const Color(0xFF78909C), const Color(0xFF90A4AE)]; // Grey-Blue
+        
+        targetTemp = 27.0 + _random.nextDouble() * 2; // Mild (27-29)
+        targetHum = 70.0 + _random.nextDouble() * 10; // Humid (70-80%)
+        targetLight = 800.0 + _random.nextDouble() * 400; // Dimmer
+        targetRain = 4095; // Dry Sensor
+        _rainConfidence = 40.0 + _random.nextDouble() * 20; // Medium chance
 
+      } else if (weatherRoll < 9) {
+        // RAINY
+        _weatherCondition = "Rainy";
+        _weatherDescription = "Light rain, rod retracted";
+        _weatherIcon = Icons.grain;
+        _weatherGradient = [const Color(0xFF455A64), const Color(0xFF607D8B)]; // Dark Grey
+        
+        targetTemp = 24.0 + _random.nextDouble() * 2; // Cool (24-26)
+        targetHum = 90.0 + _random.nextDouble() * 5; // Very Humid (90-95%)
+        targetLight = 300.0 + _random.nextDouble() * 200; // Dark
+        targetRain = 1500; // Wet Sensor (< 2000)
+        _rainConfidence = 85.0 + _random.nextDouble() * 10; // High chance
+
+      } else {
+        // THUNDERSTORM
+        _weatherCondition = "Storm";
+        _weatherDescription = "Heavy rain & wind alert";
+        _weatherIcon = Icons.thunderstorm;
+        _weatherGradient = [const Color(0xFF263238), const Color(0xFF37474F)]; // Very Dark
+        
+        targetTemp = 22.0 + _random.nextDouble() * 2; // Cold
+        targetHum = 98.0; // Max Humidity
+        targetLight = 100.0; // Very Dark
+        targetRain = 500; // Very Wet (< 1000)
+        _rainConfidence = 100.0; // Certain
+      }
+
+      // 2. Smoothly transition values (Mock inertia)
+      // Instead of jumping instantly, move 20% towards the target
+      _sensorTemperature += (targetTemp - _sensorTemperature) * 0.2;
+      _sensorHumidity += (targetHum - _sensorHumidity) * 0.2;
+      _sensorLight += (targetLight - _sensorLight) * 0.2;
+      
+      // Rain sensor jumps instantly because rain is sudden
+      _sensorRainIntensity = targetRain;
+
+      // Add noise to make graphs look real
+      _sensorTemperature += (_random.nextDouble() - 0.5) * 0.2;
+      _sensorHumidity += (_random.nextDouble() - 0.5) * 1.0;
+
+      // 3. Update History
       _addToHistory(_humidityHistory, _sensorHumidity, now);
       _addToHistory(_tempHistory, _sensorTemperature, now);
       _addToHistory(_lightHistory, _sensorLight, now);
@@ -225,15 +291,6 @@ class _DashboardContentState extends State<DashboardContent> {
       _addToHistory(_rainConfidenceHistory, 5.0 + _random.nextDouble() * 5, time);
       _addToHistory(_rainHistory, 4095, time);
     }
-  }
-
-  double _calculateRainfallConfidence({required double humidity, required double temperature, required double light, required double rainIntensity}) {
-    double score = 5.0; 
-    if (humidity > 70) score += 20;
-    if (temperature < 26) score += 10;
-    if (light < 500) score += 15;
-    score += _random.nextInt(5); 
-    return score.clamp(0.0, 100.0);
   }
 
   void _addToHistory(List<SensorDataPoint> history, double value, DateTime timestamp) {
@@ -478,7 +535,8 @@ class _DashboardContentState extends State<DashboardContent> {
     // Helper for Rain Text
     String getRainStatus() {
       if (_sensorRainIntensity > 3500) return "Dry";
-      return "Rain"; 
+      if (_sensorRainIntensity > 2000) return "Moist";
+      return "Wet"; 
     }
 
     return SafeArea(
@@ -513,14 +571,15 @@ class _DashboardContentState extends State<DashboardContent> {
             ),
             const SizedBox(height: 24),
 
-            // --- STATIC WEATHER CARD ---
+            // --- STATIC WEATHER CARD (Now Dynamic) ---
             Container(
               width: double.infinity,
               padding: const EdgeInsets.all(24),
               decoration: BoxDecoration(
-                gradient: const LinearGradient(colors: [Color(0xFF2962FF), Color(0xFF448AFF)], begin: Alignment.topLeft, end: Alignment.bottomRight),
+                // Dynamic Gradient based on weather
+                gradient: LinearGradient(colors: _weatherGradient, begin: Alignment.topLeft, end: Alignment.bottomRight),
                 borderRadius: BorderRadius.circular(24),
-                boxShadow: [BoxShadow(color: Colors.blue.withOpacity(0.3), blurRadius: 20, offset: const Offset(0, 10))],
+                boxShadow: [BoxShadow(color: _weatherGradient.last.withOpacity(0.3), blurRadius: 20, offset: const Offset(0, 10))],
               ),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -535,15 +594,16 @@ class _DashboardContentState extends State<DashboardContent> {
                           child: const Row(mainAxisSize: MainAxisSize.min, children: [Icon(Icons.location_on, color: Colors.white, size: 12), SizedBox(width: 4), Text("Quezon City", style: TextStyle(color: Colors.white, fontSize: 12))]),
                         ),
                         const SizedBox(height: 12),
-                        const Text("Sunny", style: TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold)),
+                        Text(_weatherCondition, style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold)),
                         const SizedBox(height: 6),
-                        Text("Clear skies, perfect for drying", style: TextStyle(color: Colors.white.withOpacity(0.9), fontSize: 13, height: 1.4)),
+                        Text(_weatherDescription, style: TextStyle(color: Colors.white.withOpacity(0.9), fontSize: 13, height: 1.4)),
                         const SizedBox(height: 10),
-                        const Text("31°", style: TextStyle(color: Colors.white, fontSize: 32, fontWeight: FontWeight.bold)),
+                        // Current Sim Temp
+                        Text("${_sensorTemperature.toStringAsFixed(0)}°", style: const TextStyle(color: Colors.white, fontSize: 32, fontWeight: FontWeight.bold)),
                       ],
                     ),
                   ),
-                  const Icon(Icons.wb_sunny, size: 60, color: Colors.yellowAccent),
+                  Icon(_weatherIcon, size: 60, color: Colors.yellowAccent),
                 ],
               ),
             ),
@@ -565,7 +625,7 @@ class _DashboardContentState extends State<DashboardContent> {
                   icon: Icons.water_drop_outlined, 
                   color: Colors.green, 
                   bgColor: const Color(0xFFE8F5E9), 
-                  onTap: () => _showDetailModal("Humidity", "${_sensorHumidity.toStringAsFixed(1)}%", _humidityHistory, "Humidity is fluctuating slightly.")
+                  onTap: () => _showDetailModal("Humidity", "${_sensorHumidity.toStringAsFixed(1)}%", _humidityHistory, "Humidity is fluctuating based on weather.")
                 ),
                 _buildSensorCard(
                   title: "Temperature", 
@@ -573,22 +633,22 @@ class _DashboardContentState extends State<DashboardContent> {
                   icon: Icons.thermostat, 
                   color: Colors.blue, 
                   bgColor: const Color(0xFFE3F2FD), 
-                  onTap: () => _showDetailModal("Temperature", "${_sensorTemperature.toStringAsFixed(1)}°C", _tempHistory, "Temperature is optimal.")
+                  onTap: () => _showDetailModal("Temperature", "${_sensorTemperature.toStringAsFixed(1)}°C", _tempHistory, "Temperature adapts to simulated weather.")
                 ),
                 _buildSensorCard(
                   title: "Rain Sensor", 
                   value: getRainStatus(), 
-                  subtitle: "No Rain", 
+                  subtitle: getRainStatus() == "Dry" ? "Safe" : "Alert", 
                   icon: Icons.cloud_outlined, 
-                  color: Colors.orange, 
+                  color: getRainStatus() == "Dry" ? Colors.green : Colors.orange, 
                   bgColor: const Color(0xFFFFF3E0), 
-                  onTap: () => _showDetailModal("Rain Sensor", getRainStatus(), _rainHistory, "Sensor is dry.")
+                  onTap: () => _showDetailModal("Rain Sensor", getRainStatus(), _rainHistory, "Detects rain when weather turns bad.")
                 ),
                 _buildCircleProgressCard(
                   title: "Rain Chance", 
                   percentage: _rainConfidence.toInt(), 
                   icon: Icons.thunderstorm_outlined, 
-                  onTap: () => _showDetailModal("Rain Chance", "${_rainConfidence.toInt()}%", _rainConfidenceHistory, "Low chance of rain calculated.")
+                  onTap: () => _showDetailModal("Rain Chance", "${_rainConfidence.toInt()}%", _rainConfidenceHistory, "Calculated based on current weather.")
                 ),
                 _buildSensorCard(
                   title: "Ambient Light", 
@@ -596,7 +656,7 @@ class _DashboardContentState extends State<DashboardContent> {
                   icon: Icons.wb_sunny_outlined, 
                   color: Colors.orange, 
                   bgColor: const Color(0xFFFFF3E0), 
-                  onTap: () => _showDetailModal("Ambient Light", "${_sensorLight.toStringAsFixed(0)} lux", _lightHistory, "Good sunlight.")
+                  onTap: () => _showDetailModal("Ambient Light", "${_sensorLight.toStringAsFixed(0)} lux", _lightHistory, "Varies with cloud cover.")
                 ),
               ],
             ),

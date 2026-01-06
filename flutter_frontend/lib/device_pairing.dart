@@ -345,7 +345,7 @@ class _DevicePairingScreenState extends State<DevicePairingScreen> {
                     },
                   ),
                 );
-              }).toList(),
+              }),
 
               const SizedBox(height: 16),
               const Divider(),

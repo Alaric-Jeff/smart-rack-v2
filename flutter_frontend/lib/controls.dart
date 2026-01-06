@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'dart:async';
-import 'dart:ui'; // For the blur effect
+// For the blur effect
 
 class ControlsScreen extends StatefulWidget {
   const ControlsScreen({super.key});
