@@ -1,3 +1,4 @@
+//signup.dart
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
@@ -5,6 +6,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'terms_and_condtions.dart';
+import 'home.dart';
 
 class CreateAccountScreen extends StatefulWidget {
   const CreateAccountScreen({super.key});
@@ -18,6 +20,8 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
   bool _isChecked = false;
   bool _isPasswordVisible = false;
   bool _isLoading = false;
+  bool _canResendEmail = true;
+  int _resendCooldownSeconds = 0;
 
   // Controllers
   final TextEditingController _firstNameController = TextEditingController();
@@ -25,7 +29,6 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
   final TextEditingController _confirmPasswordController = TextEditingController();
-  final TextEditingController _contactNumberController = TextEditingController();
 
   // Firebase Auth & Firestore
   final FirebaseAuth _auth = FirebaseAuth.instance;
@@ -48,9 +51,10 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
     _emailController.dispose();
     _passwordController.dispose();
     _confirmPasswordController.dispose();
-    _contactNumberController.dispose();
     super.dispose();
   }
+
+  // Start cooldown timer for resend email (removed - now handled inline in dialog)
 
   // ✨ Enhanced Manual Signup with Email Verification
   Future<void> _handleSignup() async {
@@ -59,80 +63,80 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
       return;
     }
 
-    if (_formKey.currentState!.validate()) {
-      setState(() => _isLoading = true);
+    if (!_formKey.currentState!.validate()) {
+      _showSnackBar('Please fix the errors in the form before submitting', Colors.orange);
+      return;
+    }
 
-      try {
-        // Step 1: Create Firebase Auth user
-        UserCredential userCredential = await _auth.createUserWithEmailAndPassword(
-          email: _emailController.text.trim(),
-          password: _passwordController.text,
-        );
+    setState(() => _isLoading = true);
 
-        String uuid = userCredential.user!.uid;
+    try {
+      // Step 1: Create Firebase Auth user
+      UserCredential userCredential = await _auth.createUserWithEmailAndPassword(
+        email: _emailController.text.trim(),
+        password: _passwordController.text,
+      );
 
-        // Step 2: Send email verification
-        await userCredential.user!.sendEmailVerification();
+      String uuid = userCredential.user!.uid;
 
-        // Step 3: Create user document in Firestore with emailVerified flag
-        await _firestore.collection('users').doc(uuid).set({
-          'uuid': uuid,
-          'firstName': _firstNameController.text.trim(),
-          'lastName': _lastNameController.text.trim(),
-          'displayName': '${_firstNameController.text.trim()} ${_lastNameController.text.trim()}',
-          'email': _emailController.text.trim(),
-          'contactNumber': _contactNumberController.text.trim(),
-          'signInProvider': 'manual',
-          'photoUrl': null,
-          'address': null,
-          'devices': [],
-          'emailVerified': false, // Initially false
-          'createdAt': FieldValue.serverTimestamp(),
-          'updatedAt': FieldValue.serverTimestamp(),
-        });
+      // Step 2: Send email verification
+      await userCredential.user!.sendEmailVerification();
 
-        if (mounted) {
-          setState(() => _isLoading = false);
-          
-          // Show verification dialog
-          _showEmailVerificationDialog(userCredential.user!);
+      // Step 3: Create user document in Firestore with emailVerified flag
+      await _firestore.collection('users').doc(uuid).set({
+        'uuid': uuid,
+        'firstName': _firstNameController.text.trim(),
+        'lastName': _lastNameController.text.trim(),
+        'displayName': '${_firstNameController.text.trim()} ${_lastNameController.text.trim()}',
+        'email': _emailController.text.trim(),
+        'contactNumber': null,
+        'signInProvider': 'manual',
+        'photoUrl': null,
+        'address': null,
+        'devices': [],
+        'emailVerified': false,
+        'createdAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+
+      if (mounted) {
+        setState(() => _isLoading = false);
+        _showEmailVerificationDialog(userCredential.user!);
+      }
+    } on FirebaseAuthException catch (e) {
+      if (mounted) {
+        setState(() => _isLoading = false);
+        String errorMessage = 'An error occurred during signup';
+        
+        switch (e.code) {
+          case 'email-already-in-use':
+            errorMessage = 'This email address is already registered. Please use a different email or try logging in.';
+            break;
+          case 'invalid-email':
+            errorMessage = 'The email address format is invalid. Please check and try again.';
+            break;
+          case 'weak-password':
+            errorMessage = 'The password provided is too weak. Please use a stronger password.';
+            break;
+          case 'operation-not-allowed':
+            errorMessage = 'Email/password accounts are currently disabled. Please contact support.';
+            break;
+          default:
+            errorMessage = e.message ?? 'Signup failed. Please try again.';
         }
-      } on FirebaseAuthException catch (e) {
-        if (mounted) {
-          setState(() => _isLoading = false);
-          String errorMessage = 'An error occurred during signup';
-          
-          switch (e.code) {
-            case 'email-already-in-use':
-              errorMessage = 'This email address is already registered. Please use a different email or try logging in.';
-              break;
-            case 'invalid-email':
-              errorMessage = 'The email address format is invalid. Please check and try again.';
-              break;
-            case 'weak-password':
-              errorMessage = 'The password provided is too weak. Please use a stronger password.';
-              break;
-            case 'operation-not-allowed':
-              errorMessage = 'Email/password accounts are currently disabled. Please contact support.';
-              break;
-            default:
-              errorMessage = e.message ?? 'Signup failed. Please try again.';
-          }
-          _showSnackBar(errorMessage, Colors.red);
+        _showSnackBar(errorMessage, Colors.red);
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isLoading = false);
+        
+        try {
+          await _auth.currentUser?.delete();
+        } catch (deleteError) {
+          debugPrint('Failed to delete user after Firestore error: $deleteError');
         }
-      } catch (e) {
-        if (mounted) {
-          setState(() => _isLoading = false);
-          
-          // If Firestore write fails, clean up the Auth user
-          try {
-            await _auth.currentUser?.delete();
-          } catch (deleteError) {
-            debugPrint('Failed to delete user after Firestore error: $deleteError');
-          }
-          
-          _showSnackBar('An unexpected error occurred. Please try again later.', Colors.red);
-        }
+        
+        _showSnackBar('An unexpected error occurred. Please try again later.', Colors.red);
       }
     }
   }
@@ -142,88 +146,138 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          title: Row(
-            children: [
-              Icon(Icons.mark_email_unread, color: _primaryColor, size: 28),
-              const SizedBox(width: 10),
-              const Text('Verify Your Email'),
-            ],
-          ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                'We\'ve sent a verification email to:',
-                style: TextStyle(fontSize: 14),
+      builder: (BuildContext dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              title: Row(
+                children: [
+                  Icon(Icons.mark_email_unread, color: _primaryColor, size: 28),
+                  const SizedBox(width: 10),
+                  const Text('Verify Your Email'),
+                ],
               ),
-              const SizedBox(height: 8),
-              Text(
-                user.email ?? '',
-                style: TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.bold,
-                  color: _primaryColor,
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'We\'ve sent a verification email to:',
+                    style: TextStyle(fontSize: 14),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    user.email ?? '',
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold,
+                      color: _primaryColor,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  const Text(
+                    'Please check your inbox and click the verification link to activate your account.',
+                    style: TextStyle(fontSize: 14),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: _canResendEmail
+                      ? () async {
+                          try {
+                            await user.sendEmailVerification();
+                            
+                            // Start cooldown and update dialog
+                            setState(() {
+                              _canResendEmail = false;
+                              _resendCooldownSeconds = 60;
+                            });
+                            
+                            _showSnackBar('Verification email resent successfully', Colors.green);
+                            
+                            // Countdown timer that updates both main state and dialog state
+                            Future.doWhile(() async {
+                              await Future.delayed(const Duration(seconds: 1));
+                              if (mounted) {
+                                setState(() {
+                                  _resendCooldownSeconds--;
+                                  if (_resendCooldownSeconds <= 0) {
+                                    _canResendEmail = true;
+                                  }
+                                });
+                                setDialogState(() {}); // Update dialog UI
+                              }
+                              return _resendCooldownSeconds > 0 && mounted;
+                            });
+                          } on FirebaseAuthException catch (e) {
+                            if (e.code == 'too-many-requests') {
+                              _showSnackBar('Too many requests. Please wait before trying again.', Colors.orange);
+                            } else {
+                              _showSnackBar('Failed to resend email. Please try again later.', Colors.red);
+                            }
+                          }
+                        }
+                      : null,
+                  child: Text(
+                    _canResendEmail
+                        ? 'Resend Email'
+                        : 'Resend in ${_resendCooldownSeconds}s',
+                    style: TextStyle(
+                      color: _canResendEmail ? _primaryColor : Colors.grey,
+                    ),
+                  ),
                 ),
-              ),
-              const SizedBox(height: 16),
-              const Text(
-                'Please check your inbox and click the verification link to activate your account.',
-                style: TextStyle(fontSize: 14),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () async {
-                await user.sendEmailVerification();
-                _showSnackBar('Verification email resent successfully', Colors.green);
-              },
-              child: const Text('Resend Email'),
-            ),
-            ElevatedButton(
-              onPressed: () async {
-                // Check verification status
-                await user.reload();
-                User? refreshedUser = _auth.currentUser;
-                
-                if (refreshedUser != null && refreshedUser.emailVerified) {
-                  // Update Firestore
-                  await _firestore.collection('users').doc(refreshedUser.uid).update({
-                    'emailVerified': true,
-                    'updatedAt': FieldValue.serverTimestamp(),
-                  });
-                  
-                  Navigator.of(context).pop();
-                  _showSnackBar('Email verified! Account created successfully.', Colors.green);
-                  
-                  // Navigate to next screen
-                  // Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => HomeScreen()));
-                } else {
-                  _showSnackBar('Email not verified yet. Please check your inbox.', Colors.orange);
-                }
-              },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: _primaryColor,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-              ),
-              child: const Text('I\'ve Verified'),
-            ),
-          ],
+                ElevatedButton(
+                  onPressed: () async {
+                    try {
+                      await user.reload();
+                      User? refreshedUser = _auth.currentUser;
+                      
+                      if (refreshedUser != null && refreshedUser.emailVerified) {
+                        await _firestore.collection('users').doc(refreshedUser.uid).update({
+                          'emailVerified': true,
+                          'updatedAt': FieldValue.serverTimestamp(),
+                        });
+                        
+                        Navigator.of(dialogContext).pop();
+                        _showSnackBar('Email verified! Account created successfully.', Colors.green);
+                        
+                        if (mounted) {
+                          Navigator.pushReplacement(
+                            context,
+                            MaterialPageRoute(builder: (_) => const HomeScreen()),
+                          );
+                        }
+                      } else {
+                        _showSnackBar('Email not verified yet. Please check your inbox and click the verification link.', Colors.orange);
+                      }
+                    } catch (e) {
+                      _showSnackBar('Failed to verify email status. Please try again.', Colors.red);
+                      debugPrint('Verification check error: $e');
+                    }
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: _primaryColor,
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                  child: const Text('I\'ve Verified'),
+                ),
+              ],
+            );
+          },
         );
       },
     );
   }
 
-  // ✨ Enhanced Google Sign Up with Additional Data
+  // ✨ Enhanced Google Sign Up with Auto-Login
   Future<void> _handleGoogleSignUp() async {
     setState(() => _isLoading = true);
 
     try {
-      // Step 1: Sign in with Google
       final GoogleSignInAccount? googleUser = await _googleSignIn.signIn();
       
       if (googleUser == null) {
@@ -233,41 +287,37 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
 
       final GoogleSignInAuthentication googleAuth = await googleUser.authentication;
 
-      // Step 2: Create Firebase credential
       final credential = GoogleAuthProvider.credential(
         accessToken: googleAuth.accessToken,
         idToken: googleAuth.idToken,
       );
 
-      // Step 3: Sign in to Firebase
       UserCredential userCredential = await _auth.signInWithCredential(credential);
       User? user = userCredential.user;
 
       if (user != null) {
         String uuid = user.uid;
         
-        // Step 4: Check if user already exists
         DocumentSnapshot existingUser = await _firestore.collection('users').doc(uuid).get();
         
         if (existingUser.exists) {
           if (mounted) {
             setState(() => _isLoading = false);
-            _showSnackBar('Account already exists. Redirecting to login...', Colors.orange);
+            _showSnackBar('Welcome back! Signing you in...', Colors.green);
             
-            await _auth.signOut();
-            await _googleSignIn.signOut();
-            Navigator.pop(context);
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(builder: (_) => const HomeScreen()),
+            );
           }
           return;
         }
 
-        // Step 5: Split display name into first and last name
         String displayName = user.displayName ?? googleUser.displayName ?? 'Google User';
         List<String> nameParts = displayName.split(' ');
         String firstName = nameParts.isNotEmpty ? nameParts[0] : '';
         String lastName = nameParts.length > 1 ? nameParts.sublist(1).join(' ') : '';
 
-        // Step 6: Create user document with enhanced data
         await _firestore.collection('users').doc(uuid).set({
           'uuid': uuid,
           'displayName': displayName,
@@ -279,34 +329,29 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
           'photoUrl': user.photoURL ?? googleUser.photoUrl,
           'address': null,
           'devices': [],
-          'emailVerified': user.emailVerified, // Google emails are pre-verified
+          'emailVerified': user.emailVerified,
           'createdAt': FieldValue.serverTimestamp(),
           'updatedAt': FieldValue.serverTimestamp(),
         });
 
         if (mounted) {
           setState(() => _isLoading = false);
-          _showSnackBar('Google sign-up successful!', Colors.green);
+          _showSnackBar('Google sign-up successful! Welcome!', Colors.green);
           
-          debugPrint('=== GOOGLE SSO SIGNUP SUCCESS ===');
-          debugPrint('UUID: $uuid');
-          debugPrint('Display Name: $displayName');
-          debugPrint('Email: ${user.email}');
-          debugPrint('Email Verified: ${user.emailVerified}');
-          debugPrint('================================');
-          
-          // Navigate to home screen
-          // Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => HomeScreen()));
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(builder: (_) => const HomeScreen()),
+          );
         }
       }
     } on FirebaseAuthException catch (e) {
       if (mounted) {
         setState(() => _isLoading = false);
         
-        String errorMessage = 'Google sign-up failed';
+        String errorMessage = 'Google authentication failed';
         switch (e.code) {
           case 'account-exists-with-different-credential':
-            errorMessage = 'An account with this email already exists using a different sign-in method. Please try another method.';
+            errorMessage = 'An account with this email already exists using a different sign-in method.';
             break;
           case 'invalid-credential':
             errorMessage = 'Invalid credentials provided. Please try again.';
@@ -318,7 +363,7 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
             errorMessage = 'This account has been disabled. Please contact support.';
             break;
           default:
-            errorMessage = e.message ?? 'Google sign-up failed. Please try again.';
+            errorMessage = e.message ?? 'Google authentication failed. Please try again.';
         }
         
         _showSnackBar(errorMessage, Colors.red);
@@ -328,13 +373,24 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
         setState(() => _isLoading = false);
         
         try {
-          await _auth.currentUser?.delete();
           await _googleSignIn.signOut();
-        } catch (deleteError) {
-          debugPrint('Failed to delete user after error: $deleteError');
+          
+          if (_auth.currentUser != null) {
+            DocumentSnapshot check = await _firestore
+                .collection('users')
+                .doc(_auth.currentUser!.uid)
+                .get();
+            
+            if (!check.exists) {
+              await _auth.currentUser?.delete();
+            }
+          }
+        } catch (cleanupError) {
+          debugPrint('Cleanup error: $cleanupError');
         }
         
         _showSnackBar('An unexpected error occurred. Please try again.', Colors.red);
+        debugPrint('Google SSO Error: $e');
       }
     }
   }
@@ -398,17 +454,35 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                             label: 'FIRST NAME',
                             hint: 'First',
                             controller: _firstNameController,
-                            inputFormatters: [
-                              FilteringTextInputFormatter.allow(RegExp(r'[a-zA-Z]')),
-                              LengthLimitingTextInputFormatter(50),
-                            ],
                             validator: (value) {
                               if (value == null || value.isEmpty) {
                                 return 'First name is required';
                               }
-                              if (value.length < 3) {
-                                return 'First name must be at least 3 characters';
+                              
+                              String trimmed = value.trim();
+                              
+                              if (trimmed.length < 3) {
+                                return 'Must be at least 3 characters';
                               }
+                              if (trimmed.length > 50) {
+                                return 'Must not exceed 50 characters';
+                              }
+                              
+                              // Check for numbers
+                              if (RegExp(r'[0-9]').hasMatch(trimmed)) {
+                                return 'Numbers are not allowed';
+                              }
+                              
+                              // Check for double spaces
+                              if (trimmed.contains('  ')) {
+                                return 'Multiple spaces are not allowed';
+                              }
+                              
+                              // Check for invalid special characters
+                              if (RegExp(r'[!@#$%^&*(),.?":{}|<>+=\[\]\\\/;`~_]').hasMatch(trimmed)) {
+                                return 'Special characters are not allowed';
+                              }
+                              
                               return null;
                             },
                           ),
@@ -419,17 +493,35 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                             label: 'LAST NAME',
                             hint: 'Last',
                             controller: _lastNameController,
-                            inputFormatters: [
-                              FilteringTextInputFormatter.allow(RegExp(r'[a-zA-Z]')),
-                              LengthLimitingTextInputFormatter(50),
-                            ],
                             validator: (value) {
                               if (value == null || value.isEmpty) {
                                 return 'Last name is required';
                               }
-                              if (value.length < 3) {
-                                return 'Last name must be at least 3 characters';
+                              
+                              String trimmed = value.trim();
+                              
+                              if (trimmed.length < 3) {
+                                return 'Must be at least 3 characters';
                               }
+                              if (trimmed.length > 50) {
+                                return 'Must not exceed 50 characters';
+                              }
+                              
+                              // Check for numbers
+                              if (RegExp(r'[0-9]').hasMatch(trimmed)) {
+                                return 'Numbers are not allowed';
+                              }
+                              
+                              // Check for double spaces
+                              if (trimmed.contains('  ')) {
+                                return 'Multiple spaces are not allowed';
+                              }
+                              
+                              // Check for invalid special characters
+                              if (RegExp(r'[!@#$%^&*(),.?":{}|<>+=\[\]\\\/;`~_]').hasMatch(trimmed)) {
+                                return 'Special characters are not allowed';
+                              }
+                              
                               return null;
                             },
                           ),
@@ -456,28 +548,6 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                     ),
                     const SizedBox(height: 12),
 
-                    // Contact Number
-                    _buildLabelAndField(
-                      label: 'CONTACT NUMBER',
-                      hint: '9123456789',
-                      controller: _contactNumberController,
-                      keyboardType: TextInputType.number,
-                      inputFormatters: [
-                        FilteringTextInputFormatter.digitsOnly,
-                        LengthLimitingTextInputFormatter(10),
-                      ],
-                      validator: (value) {
-                        if (value == null || value.isEmpty) {
-                          return 'Contact number is required';
-                        }
-                        if (value.length != 10) {
-                          return 'Contact number must be exactly 10 digits';
-                        }
-                        return null;
-                      },
-                    ),
-                    const SizedBox(height: 12),
-
                     // Password
                     _buildLabelAndField(
                       label: 'PASSWORD',
@@ -486,24 +556,27 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                       isPassword: true,
                       isVisible: _isPasswordVisible,
                       onVisibilityChanged: () => setState(() => _isPasswordVisible = !_isPasswordVisible),
-                      inputFormatters: [
-                        LengthLimitingTextInputFormatter(50),
-                      ],
                       validator: (value) {
                         if (value == null || value.isEmpty) {
                           return 'Password is required';
                         }
                         if (value.length < 8) {
-                          return 'Password must be at least 8 characters long';
+                          return 'Must be at least 8 characters';
+                        }
+                        if (value.length > 50) {
+                          return 'Must not exceed 50 characters';
                         }
                         if (!RegExp(r'[A-Z]').hasMatch(value)) {
-                          return 'Password must contain at least one uppercase letter';
+                          return 'Must contain at least one uppercase letter';
+                        }
+                        if (!RegExp(r'[a-z]').hasMatch(value)) {
+                          return 'Must contain at least one lowercase letter';
                         }
                         if (!RegExp(r'[0-9]').hasMatch(value)) {
-                          return 'Password must contain at least one number';
+                          return 'Must contain at least one number';
                         }
                         if (!RegExp(r'[!@#$%^&*(),.?":{}|<>]').hasMatch(value)) {
-                          return 'Password must contain at least one special character';
+                          return 'Must contain at least one special character';
                         }
                         return null;
                       },
@@ -518,9 +591,6 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                       isPassword: true,
                       isVisible: _isPasswordVisible,
                       onVisibilityChanged: () => setState(() => _isPasswordVisible = !_isPasswordVisible),
-                      inputFormatters: [
-                        LengthLimitingTextInputFormatter(50),
-                      ],
                       validator: (value) {
                         if (value == null || value.isEmpty) {
                           return 'Please confirm your password';
@@ -660,7 +730,6 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
     bool isVisible = false,
     VoidCallback? onVisibilityChanged,
     TextInputType? keyboardType,
-    List<TextInputFormatter>? inputFormatters,
   }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -673,7 +742,6 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
           validator: validator,
           obscureText: isPassword ? !isVisible : false,
           keyboardType: keyboardType,
-          inputFormatters: inputFormatters,
           style: TextStyle(color: _textColor, fontSize: 14),
           autovalidateMode: AutovalidateMode.onUserInteraction,
           decoration: InputDecoration(
