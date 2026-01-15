@@ -89,6 +89,8 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   }
 
   // --- LOGIC: ACTIONS ---
+  
+  // Existing function kept intact
   void _markAllRead() {
     setState(() {
       for (var n in _notifications) {
@@ -100,6 +102,34 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
         content: Text("All marked as read"),
         behavior: SnackBarBehavior.floating,
         duration: Duration(seconds: 1),
+      ),
+    );
+  }
+
+  // --- NEW FUNCTION: CONFIRMATION MODAL FOR MARK ALL READ ---
+  void _confirmMarkAllRead() {
+    // If everything is already read, don't show the modal
+    if (_notifications.every((n) => n['isRead'] == true)) return;
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text("Mark all as read?"),
+        content: const Text("This will mark all notifications as read."),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx), 
+            child: const Text("Cancel", style: TextStyle(color: Colors.grey))
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(ctx); // Close dialog
+              _markAllRead(); // Call original function
+            }, 
+            child: const Text("Confirm", style: TextStyle(color: Color(0xFF2962FF), fontWeight: FontWeight.bold))
+          ),
+        ],
       ),
     );
   }
@@ -191,7 +221,8 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                   Row(
                     children: [
                       IconButton(
-                        onPressed: _markAllRead,
+                        // UPDATED: Now points to the confirmation modal
+                        onPressed: _confirmMarkAllRead,
                         tooltip: "Mark all read",
                         icon: const Icon(Icons.done_all, color: Color(0xFF2962FF)),
                       ),
