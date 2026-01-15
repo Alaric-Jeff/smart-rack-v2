@@ -79,6 +79,15 @@ class _ControlsScreenState extends State<ControlsScreen> {
 
   // --- HANDLE TIMER PRESS/UNPRESS ---
   void _handleTimerSelection(String duration) {
+    // 1. NEW: Validation - If timer is running and user clicks a DIFFERENT duration
+    if (_selectedFanTimer != null && _selectedFanTimer != duration) {
+      _showConfirmation("Change Timer", "change the timer to $duration", () {
+          _startTimerSequence(duration);
+      });
+      return;
+    }
+
+    // 2. Existing Logic - If user clicks the SAME duration (Toggle off)
     if (_selectedFanTimer == duration) {
       _showConfirmation("Stop Timer", "cancel the current timer", () {
           _stopTimer();
@@ -86,6 +95,12 @@ class _ControlsScreenState extends State<ControlsScreen> {
       return; 
     }
 
+    // 3. Start Timer Normally
+    _startTimerSequence(duration);
+  }
+
+  // --- NEW: Helper to start timer (extracted to allow calling from modal) ---
+  void _startTimerSequence(String duration) {
     int minutes = int.parse(duration.replaceAll('m', ''));
     int totalSeconds = minutes * 60;
 
@@ -253,7 +268,25 @@ class _ControlsScreenState extends State<ControlsScreen> {
                         _buildOptionButton("10m", _selectedFanTimer, (val) => _handleTimerSelection(val)),
                         _buildOptionButton("15m", _selectedFanTimer, (val) => _handleTimerSelection(val)),
                         _buildOptionButton("30m", _selectedFanTimer, (val) => _handleTimerSelection(val)),
+                        
+                        // --- NEW: Stop Button (Only appears when timer is running) ---
+                        if (_selectedFanTimer != null)
+                          Padding(
+                            padding: const EdgeInsets.only(left: 8.0),
+                            child: GestureDetector(
+                              onTap: () => _showConfirmation("Stop Timer", "stop the fan", _stopTimer),
+                              child: Container(
+                                padding: const EdgeInsets.all(12),
+                                decoration: BoxDecoration(
+                                  color: Colors.red.withOpacity(0.1),
+                                  borderRadius: BorderRadius.circular(30),
+                                ),
+                                child: const Icon(Icons.stop_rounded, color: Colors.red, size: 20),
+                              ),
+                            ),
+                          ),
                       ]),
+                      
                       const SizedBox(height: 24),
                       const Text("Fan Mode", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
                       const SizedBox(height: 16),

@@ -93,12 +93,12 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
       builder: (context) => AlertDialog(
         title: const Text("Terms & Conditions", style: TextStyle(fontWeight: FontWeight.bold)),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        content: Scrollbar(
+        content: const Scrollbar(
           child: SingleChildScrollView(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
-              children: const [
+              children: [
                 Text("1. Acceptance", style: TextStyle(fontWeight: FontWeight.bold)),
                 Text("By creating an account, you agree to comply with all terms regarding the use of the Smart Rack system."),
                 SizedBox(height: 12),
