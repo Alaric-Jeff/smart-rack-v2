@@ -243,11 +243,11 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
       builder: (BuildContext context) {
         return AlertDialog(
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          title: Row(
+          title: const Row(
             children: [
               Icon(Icons.check_circle, color: Colors.green, size: 28),
-              const SizedBox(width: 10),
-              const Text('Password Reset Successful'),
+              SizedBox(width: 10),
+              Text('Password Reset Successful'),
             ],
           ),
           content: const Text(

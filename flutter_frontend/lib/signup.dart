@@ -1,11 +1,11 @@
 //signup.dart
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
-import 'package:flutter/services.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'terms_and_condtions.dart';
+// Note: Ensure you removed 'terms_and_condtions.dart' import if you are using the modal now,
+// or keep it if you still have the file.
 import 'home.dart';
 
 class CreateAccountScreen extends StatefulWidget {
@@ -45,7 +45,24 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
   final Color _primaryColor = const Color(0xFF2762EA);
 
   @override
+  void initState() {
+    super.initState();
+    // Add listener to email controller for auto-complete
+    _emailController.addListener(_onEmailChanged);
+  }
+
+  void _onEmailChanged() {
+    final text = _emailController.text;
+    
+    // Logic kept as per your original placeholder (empty for now to avoid bugs)
+    if (text.isNotEmpty && !text.contains('@')) {
+       // logic here
+    }
+  }
+
+  @override
   void dispose() {
+    _firstNameController.removeListener(_onEmailChanged); // Clean up listener
     _firstNameController.dispose();
     _lastNameController.dispose();
     _emailController.dispose();
@@ -54,7 +71,70 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
     super.dispose();
   }
 
-  // Start cooldown timer for resend email (removed - now handled inline in dialog)
+  // --- NEW FEATURE: Helper to append @gmail.com ---
+  void _appendGmail() {
+    final currentText = _emailController.text;
+    // Only append if not empty and doesn't have @ symbol yet
+    if (currentText.isNotEmpty && !currentText.contains('@')) {
+      setState(() {
+        _emailController.text = '$currentText@gmail.com';
+        // Move cursor to end
+        _emailController.selection = TextSelection.fromPosition(
+          TextPosition(offset: _emailController.text.length),
+        );
+      });
+    }
+  }
+
+  // --- NEW FEATURE: Terms & Conditions Modal ---
+  void _showTermsDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("Terms & Conditions", style: TextStyle(fontWeight: FontWeight.bold)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        content: Scrollbar(
+          child: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: const [
+                Text("1. Acceptance", style: TextStyle(fontWeight: FontWeight.bold)),
+                Text("By creating an account, you agree to comply with all terms regarding the use of the Smart Rack system."),
+                SizedBox(height: 12),
+                Text("2. User Responsibilities", style: TextStyle(fontWeight: FontWeight.bold)),
+                Text("You are responsible for maintaining the confidentiality of your account credentials and for all activities under your account."),
+                SizedBox(height: 12),
+                Text("3. Hardware Usage", style: TextStyle(fontWeight: FontWeight.bold)),
+                Text("The Smart Rack app controls physical hardware. Please ensure the rack area is clear before operating remotely. We are not liable for damage caused by improper use."),
+                SizedBox(height: 12),
+                Text("4. Data Privacy", style: TextStyle(fontWeight: FontWeight.bold)),
+                Text("We collect your email and device usage statistics to improve the service. We do not sell your personal data."),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text("Close", style: TextStyle(color: Colors.grey)),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              setState(() => _isChecked = true); // Auto-check the box when they agree
+              Navigator.pop(context);
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: _primaryColor,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            child: const Text("I Agree"),
+          ),
+        ],
+      ),
+    );
+  }
 
   // ✨ Enhanced Manual Signup with Email Verification
   Future<void> _handleSignup() async {
@@ -530,12 +610,24 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                     ),
                     const SizedBox(height: 12),
 
-                    // Email
+                    // Email with @gmail.com helper (UPDATED SECTION)
                     _buildLabelAndField(
                       label: 'EMAIL',
                       hint: 'kirby@example.com',
                       controller: _emailController,
                       keyboardType: TextInputType.emailAddress,
+                      suffix: IconButton(
+                        icon: const Text(
+                          '@gmail.com',
+                          style: TextStyle(
+                            color: Colors.grey,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 12,
+                          ),
+                        ),
+                        onPressed: _appendGmail,
+                        tooltip: 'Quick add @gmail.com',
+                      ),
                       validator: (value) {
                         if (value == null || value.isEmpty) {
                           return 'Email address is required';
@@ -603,7 +695,7 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                     ),
                     const SizedBox(height: 15),
 
-                    // Checkbox & Terms
+                    // Checkbox & Terms (UPDATED SECTION)
                     Row(
                       crossAxisAlignment: CrossAxisAlignment.center,
                       children: [
@@ -632,15 +724,8 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                                     decoration: TextDecoration.underline,
                                     decorationColor: Colors.blueAccent,
                                   ),
-                                  recognizer: TapGestureRecognizer()
-                                    ..onTap = () {
-                                      Navigator.push(
-                                        context,
-                                        MaterialPageRoute(
-                                          builder: (context) => const TermsAndConditionsScreen(),
-                                        ),
-                                      );
-                                    },
+                                  // Calls the new modal function instead of navigation
+                                  recognizer: TapGestureRecognizer()..onTap = _showTermsDialog,
                                 ),
                               ],
                             ),
@@ -721,6 +806,7 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
 
   // --- Helper Widgets ---
 
+  // Updated to accept 'suffix' widget for the @gmail button
   Widget _buildLabelAndField({
     required String label,
     required String hint,
@@ -730,7 +816,20 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
     bool isVisible = false,
     VoidCallback? onVisibilityChanged,
     TextInputType? keyboardType,
+    Widget? suffix, // Optional custom suffix
   }) {
+    // Determine suffix icon: either custom suffix, password toggle, or null
+    Widget? effectiveSuffix;
+    if (suffix != null) {
+      effectiveSuffix = suffix;
+    } else if (isPassword) {
+      effectiveSuffix = IconButton(
+        icon: Icon(isVisible ? Icons.visibility : Icons.visibility_off,
+            color: _labelColor, size: 20),
+        onPressed: onVisibilityChanged,
+      );
+    }
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -749,13 +848,7 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
             hintStyle: TextStyle(color: _labelColor.withOpacity(0.7), fontSize: 14),
             contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
             isDense: true,
-            suffixIcon: isPassword
-                ? IconButton(
-                    icon: Icon(isVisible ? Icons.visibility : Icons.visibility_off,
-                        color: _labelColor, size: 20),
-                    onPressed: onVisibilityChanged,
-                  )
-                : null,
+            suffixIcon: effectiveSuffix,
             enabledBorder: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(12),
                 borderSide: BorderSide(color: _labelColor.withOpacity(0.3))),
