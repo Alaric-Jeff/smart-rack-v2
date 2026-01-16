@@ -194,28 +194,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
       if (shouldSignOut != true) return;
 
-      // Get current user to check sign-in method
       final user = _auth.currentUser;
       
       if (user != null) {
-        // Check if user signed in with Google SSO
         bool isGoogleSignIn = user.providerData.any(
           (provider) => provider.providerId == 'google.com'
         );
         
-        // Only sign out from Google if user actually signed in with Google
-        // and Google Sign-In is properly configured (has client ID)
         if (isGoogleSignIn) {
           try {
             final googleSignIn = GoogleSignIn();
-            // Check if Google Sign-In is initialized (has client ID)
-            // If signOut() is called without client ID, it will throw an error
-            // So we wrap it in try-catch to handle gracefully
             await googleSignIn.signOut();
             debugPrint('Signed out from Google Sign-In');
           } catch (googleError) {
-            // If Google Sign-In sign out fails (e.g., no client ID configured),
-            // just log it and continue with Firebase Auth sign out
             debugPrint('Google Sign-In sign out skipped: $googleError');
           }
         } else {
@@ -223,7 +214,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
         }
       }
 
-      // Always sign out from Firebase Auth (works for both manual and SSO)
       await _auth.signOut();
       debugPrint('Signed out from Firebase Auth');
 
@@ -244,7 +234,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   // --- FIXED: UPDATE SETTING (Updates UI Immediately) ---
   Future<void> _updateSetting(String key, dynamic value) async {
-    // 1. Update the Screen IMMEDIATELY so the button moves
     setState(() {
       if (key == 'auto_retract') _autoRetract = value;
       if (key == 'safety_lock') _safetyLock = value;
@@ -252,8 +241,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (key == 'rain_sensitivity') _rainSensitivity = value;
     });
 
-    // 2. Save to Phone Storage (Background)
-    // We do this AFTER updating the UI so it doesn't freeze the button
+    // --- NEW: Notification Pop Up Logic ---
+    if (key == 'notifications' && value == true) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text("Notifications Enabled"),
+          backgroundColor: Colors.green,
+          duration: Duration(seconds: 2),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+
     try {
       final prefs = await SharedPreferences.getInstance();
       if (key == 'auto_retract') await prefs.setBool('auto_retract', value);
@@ -269,7 +268,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void _showConfirmation(String title, bool newValue, VoidCallback onConfirm) {
     showDialog(
       context: context,
-      barrierDismissible: false, // Prevent clicking outside to close
+      barrierDismissible: false, 
       builder: (context) {
         return AlertDialog(
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
@@ -277,13 +276,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
           content: Text("Are you sure you want to turn ${newValue ? 'ON' : 'OFF'} $title?"),
           actions: [
             TextButton(
-              onPressed: () => Navigator.pop(context), // Just close, do nothing
+              onPressed: () => Navigator.pop(context), 
               child: const Text("CANCEL", style: TextStyle(color: Colors.grey)),
             ),
             ElevatedButton(
               onPressed: () {
-                Navigator.pop(context); // 1. Close the dialog
-                onConfirm(); // 2. Perform the update
+                Navigator.pop(context); 
+                onConfirm(); 
               },
               style: ElevatedButton.styleFrom(
                 backgroundColor: const Color(0xFF2962FF),
@@ -519,16 +518,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20), boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.02), blurRadius: 10, offset: const Offset(0, 4))]),
                 child: Column(
                   children: [
-                    _buildSwitchTile(
-                      title: "Auto-Retract on Rain", 
-                      subtitle: "Automatically pull in rod when rain is detected", 
-                      icon: Icons.flash_on_rounded, 
-                      value: _autoRetract, 
-                      onChanged: (val) {
-                        _showConfirmation("Auto-Retract", val, () => _updateSetting('auto_retract', val));
-                      }
-                    ),
-                    Divider(height: 1, color: Colors.grey.shade100, indent: 60, endIndent: 20),
+                    // --- REMOVED AUTO-RETRACT BUTTON ---
+                    
                     _buildSwitchTile(
                       title: "Safety Lock", 
                       subtitle: "Prevent manual controls when heavy load detected", 
@@ -601,10 +592,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       title: "Device Pairing", 
                       icon: Icons.smartphone_outlined, 
                       onTap: () {
-                         Navigator.push(
-                           context,
-                           MaterialPageRoute(builder: (context) => const DevicePairingScreen()),
-                         );
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(builder: (context) => const DevicePairingScreen()),
+                          );
                       },
                     ),
                     Divider(height: 1, color: Colors.grey.shade100, indent: 60, endIndent: 20),

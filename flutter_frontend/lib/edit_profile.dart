@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart'; // Needed for input formatters
+import 'package:flutter/services.dart'; 
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'dart:convert'; // Added for API
+import 'package:http/http.dart' as http; // Added for API
 
 class EditProfileScreen extends StatefulWidget {
   const EditProfileScreen({super.key});
@@ -53,6 +55,29 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     _contactNumberController.dispose();
     _addressController.dispose();
     super.dispose();
+  }
+
+  // --- NEW: ADDRESS API FUNCTION (OpenStreetMap) ---
+  Future<List<String>> _fetchAddressSuggestions(String query) async {
+    if (query.length < 3) return []; // Only search after 3 chars
+
+    // Free OpenStreetMap Nominatim API
+    // Note: 'q' is query, 'limit' restricts results, 'countrycodes=ph' limits to Philippines (optional, remove if global)
+    final url = Uri.parse(
+        'https://nominatim.openstreetmap.org/search?q=$query&format=json&addressdetails=1&limit=5&countrycodes=ph');
+
+    try {
+      // User-Agent is required by OSM policy
+      final response = await http.get(url, headers: {'User-Agent': 'SmartRackApp/1.0'});
+
+      if (response.statusCode == 200) {
+        final List data = json.decode(response.body);
+        return data.map((item) => item['display_name'] as String).toList();
+      }
+    } catch (e) {
+      debugPrint("Address API Error: $e");
+    }
+    return [];
   }
 
   // --- AVATAR INITIALS HELPER ---
@@ -288,8 +313,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                     if (val.length > 25) return "Too long (max 25 chars)";
                     return null;
                   },
-                  // Display name can have numbers/special chars if user wants, but you can restrict it if you prefer.
-                  // I'll leave it flexible, but strict on First/Last Name below.
                 ),
                 const SizedBox(height: 16),
 
@@ -300,7 +323,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                       child: _buildTextField(
                         "FIRST NAME", 
                         _firstNameController, 
-                        // --- RESTRICTION: Only letters, space, dot, hyphen ---
                         inputFormatters: [
                           FilteringTextInputFormatter.allow(RegExp(r'[a-zA-Z .-]')), 
                         ],
@@ -316,7 +338,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                       child: _buildTextField(
                         "LAST NAME", 
                         _lastNameController, 
-                        // --- RESTRICTION: Only letters, space, dot, hyphen ---
                         inputFormatters: [
                           FilteringTextInputFormatter.allow(RegExp(r'[a-zA-Z .-]')),
                         ],
@@ -377,15 +398,80 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                 
                 const SizedBox(height: 16),
 
-                // --- 4. ADDRESS ---
-                _buildTextField(
-                  "Street Address", 
-                  _addressController,
-                  validator: (val) {
-                    if (val == null || val.trim().isEmpty) return "Required";
-                    if (val.length < 5) return "Invalid address";
-                    return null;
-                  },
+                // --- 4. ADDRESS (NOW WITH AUTOCOMPLETE API) ---
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text("STREET ADDRESS", style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF5A6175))),
+                    const SizedBox(height: 8),
+                    Autocomplete<String>(
+                      optionsBuilder: (TextEditingValue textEditingValue) async {
+                        if (textEditingValue.text.length < 3) return const Iterable<String>.empty();
+                        return await _fetchAddressSuggestions(textEditingValue.text);
+                      },
+                      onSelected: (String selection) {
+                        _addressController.text = selection;
+                      },
+                      fieldViewBuilder: (context, controller, focusNode, onEditingComplete) {
+                        // Sync the autocomplete controller with our main controller
+                        if (controller.text != _addressController.text) {
+                          controller.text = _addressController.text;
+                        }
+                        // Listen for changes
+                        controller.addListener(() {
+                          _addressController.text = controller.text;
+                        });
+
+                        return TextFormField(
+                          controller: controller,
+                          focusNode: focusNode,
+                          onEditingComplete: onEditingComplete,
+                          validator: (val) {
+                            if (val == null || val.trim().isEmpty) return "Required";
+                            if (val.length < 5) return "Invalid address";
+                            return null;
+                          },
+                          decoration: InputDecoration(
+                            filled: true, fillColor: Colors.white,
+                            hintText: "Search address...",
+                            suffixIcon: const Icon(Icons.location_on_outlined, color: Colors.grey),
+                            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+                            enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Colors.black87, width: 1.5)),
+                            focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Color(0xFF2962FF), width: 2)),
+                            errorBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Colors.red, width: 1.5)),
+                            focusedErrorBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Colors.red, width: 2)),
+                          ),
+                        );
+                      },
+                      optionsViewBuilder: (context, onSelected, options) {
+                        return Align(
+                          alignment: Alignment.topLeft,
+                          child: Material(
+                            elevation: 4.0,
+                            borderRadius: BorderRadius.circular(12),
+                            child: Container(
+                              width: MediaQuery.of(context).size.width - 48, // Match form width
+                              decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12)),
+                              constraints: const BoxConstraints(maxHeight: 250),
+                              child: ListView.separated(
+                                padding: EdgeInsets.zero,
+                                shrinkWrap: true,
+                                itemCount: options.length,
+                                separatorBuilder: (ctx, i) => const Divider(height: 1),
+                                itemBuilder: (BuildContext context, int index) {
+                                  final String option = options.elementAt(index);
+                                  return ListTile(
+                                    title: Text(option, style: const TextStyle(fontSize: 14)),
+                                    onTap: () => onSelected(option),
+                                  );
+                                },
+                              ),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ],
                 ),
                 
                 const SizedBox(height: 30),
@@ -420,13 +506,12 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   }
 
   // --- UPDATED HELPER WIDGET ---
-  // Now accepts 'inputFormatters' to block characters
   Widget _buildTextField(
     String label, 
     TextEditingController controller, 
     {
       String? Function(String?)? validator,
-      List<TextInputFormatter>? inputFormatters, // NEW PARAMETER
+      List<TextInputFormatter>? inputFormatters, 
     }
   ) {
     return Column(
@@ -437,7 +522,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
         TextFormField(
           controller: controller,
           validator: validator,
-          inputFormatters: inputFormatters, // PASSED HERE
+          inputFormatters: inputFormatters, 
           autovalidateMode: AutovalidateMode.onUserInteraction,
           decoration: InputDecoration(
             filled: true, fillColor: Colors.white,
