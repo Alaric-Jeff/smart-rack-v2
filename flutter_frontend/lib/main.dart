@@ -11,6 +11,7 @@ import 'firebase_options.dart';
 import 'signup.dart';
 import 'terms_and_condtions.dart';
 import 'home.dart';
+import 'otp_screen.dart'; // ADDED: Import the OTP Screen
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -57,7 +58,7 @@ class _LoginPageState extends State<LoginPage> {
   // Google Sign In
   final GoogleSignIn _googleSignIn = GoogleSignIn();
 
-  // ✨ Enhanced Login with Email Verification Check
+  // ✨ Enhanced Login with Email Verification & 2FA Check
   Future<void> _login() async {
     if (!_formKey.currentState!.validate()) return;
 
@@ -77,11 +78,10 @@ class _LoginPageState extends State<LoginPage> {
       }
 
       // 2. Check if email is verified
-      await user.reload(); // Refresh user data to get latest verification status
-      user = _auth.currentUser; // Get updated user object
+      await user.reload(); 
+      user = _auth.currentUser; 
 
       if (user != null && !user.emailVerified) {
-        // Email not verified - sign out and show verification dialog
         await _auth.signOut();
         
         if (mounted) {
@@ -91,7 +91,7 @@ class _LoginPageState extends State<LoginPage> {
         return;
       }
 
-      // 3. Check if User Document exists in Firestore
+      // 3. Check Firestore for User Doc & 2FA Status
       String uid = user!.uid;
       DocumentSnapshot userDoc = await _firestore.collection('users').doc(uid).get();
 
@@ -106,11 +106,12 @@ class _LoginPageState extends State<LoginPage> {
           'displayName': user.displayName ?? 'User',
           'role': 'user',
           'emailVerified': user.emailVerified,
+          'is2FAEnabled': false, // Default false
         });
         
         debugPrint("Missing document created successfully.");
       } else {
-        // Update emailVerified status in Firestore if it's out of sync
+        // Sync emailVerified status
         if (userDoc.data() != null) {
           Map<String, dynamic> userData = userDoc.data() as Map<String, dynamic>;
           if (userData['emailVerified'] != user.emailVerified) {
@@ -122,15 +123,30 @@ class _LoginPageState extends State<LoginPage> {
         }
       }
 
+      // --- NEW: 2FA CHECK LOGIC ---
+      bool is2FAEnabled = false;
+      if (userDoc.exists && userDoc.data() != null) {
+        Map<String, dynamic> data = userDoc.data() as Map<String, dynamic>;
+        is2FAEnabled = data['is2FAEnabled'] ?? false;
+      }
+
       if (mounted) {
         setState(() => _isLoading = false);
         _showSnackBar('Welcome back!', Colors.green);
 
-        // Navigate to home screen11
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(builder: (context) => const HomeScreen()),
-        );
+        if (is2FAEnabled) {
+          // If 2FA is ON -> Go to OTP Screen
+          Navigator.push(
+            context,
+            MaterialPageRoute(builder: (context) => OTPScreen()),
+          );
+        } else {
+          // If 2FA is OFF -> Go to Home
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(builder: (context) => const HomeScreen()),
+          );
+        }
       }
     } on FirebaseAuthException catch (e) {
       if (mounted) {
@@ -176,7 +192,6 @@ class _LoginPageState extends State<LoginPage> {
 
   // Email Verification Required Dialog
   void _showEmailVerificationRequiredDialog(User user) {
-    // Store email and password for re-authentication
     final String userEmail = user.email ?? _emailController.text.trim();
     final String userPassword = _passwordController.text.trim();
     
@@ -253,7 +268,6 @@ class _LoginPageState extends State<LoginPage> {
             TextButton(
               onPressed: () async {
                 try {
-                  // Re-authenticate to send verification email
                   UserCredential reAuthCred = await _auth.signInWithEmailAndPassword(
                     email: userEmail,
                     password: userPassword,
@@ -261,7 +275,7 @@ class _LoginPageState extends State<LoginPage> {
                   
                   if (reAuthCred.user != null) {
                     await reAuthCred.user!.sendEmailVerification();
-                    await _auth.signOut(); // Sign out again after sending
+                    await _auth.signOut(); 
                     _showSnackBar('Verification email sent successfully. Please check your inbox.', Colors.green);
                   }
                 } on FirebaseAuthException catch (e) {
@@ -280,7 +294,6 @@ class _LoginPageState extends State<LoginPage> {
             ElevatedButton(
               onPressed: () async {
                 try {
-                  // Re-authenticate to check verification status
                   UserCredential reAuthCred = await _auth.signInWithEmailAndPassword(
                     email: userEmail,
                     password: userPassword,
@@ -290,7 +303,6 @@ class _LoginPageState extends State<LoginPage> {
                   User? refreshedUser = _auth.currentUser;
                   
                   if (refreshedUser != null && refreshedUser.emailVerified) {
-                    // Update Firestore
                     await _firestore.collection('users').doc(refreshedUser.uid).update({
                       'emailVerified': true,
                       'updatedAt': FieldValue.serverTimestamp(),
@@ -299,13 +311,11 @@ class _LoginPageState extends State<LoginPage> {
                     Navigator.of(context).pop();
                     _showSnackBar('Email verified successfully! Logging you in...', Colors.green);
                     
-                    // Navigate to home screen
                     Navigator.pushReplacement(
                       context,
                       MaterialPageRoute(builder: (context) => const HomeScreen()),
                     );
                   } else {
-                    // Sign out if still not verified
                     await _auth.signOut();
                     _showSnackBar('Email not verified yet. Please check your inbox and click the verification link.', Colors.orange);
                   }
@@ -422,7 +432,6 @@ class _LoginPageState extends State<LoginPage> {
                     setDialogState(() => isProcessing = true);
 
                     try {
-                      // Send password reset email using Firebase Auth
                       await _auth.sendPasswordResetEmail(
                         email: emailController.text.trim(),
                       );
@@ -483,38 +492,32 @@ class _LoginPageState extends State<LoginPage> {
     );
   }
 
-  // Google SSO Login with Email Verification Check
+  // Google SSO Login with Email Verification Check & 2FA
   Future<void> _handleGoogleSignIn() async {
     setState(() => _isLoading = true);
 
     try {
-      // Step 1: Sign in with Google
       final GoogleSignInAccount? googleUser = await _googleSignIn.signIn();
       
       if (googleUser == null) {
-        // User canceled the sign-in
         setState(() => _isLoading = false);
         return;
       }
 
       final GoogleSignInAuthentication googleAuth = await googleUser.authentication;
 
-      // Step 2: Create Firebase credential
       final credential = GoogleAuthProvider.credential(
         accessToken: googleAuth.accessToken,
         idToken: googleAuth.idToken,
       );
 
-      // Step 3: Sign in to Firebase
       UserCredential userCredential = await _auth.signInWithCredential(credential);
       User? user = userCredential.user;
 
       if (user != null) {
-        // Check if user exists in Firestore
         DocumentSnapshot userDoc = await _firestore.collection('users').doc(user.uid).get();
         
         if (!userDoc.exists) {
-          // User signed in with Google but hasn't signed up yet
           await _auth.signOut();
           await _googleSignIn.signOut();
           
@@ -525,7 +528,6 @@ class _LoginPageState extends State<LoginPage> {
           return;
         }
 
-        // Google accounts are automatically verified, update Firestore if needed
         if (userDoc.data() != null) {
           Map<String, dynamic> userData = userDoc.data() as Map<String, dynamic>;
           if (userData['emailVerified'] != true) {
@@ -536,15 +538,30 @@ class _LoginPageState extends State<LoginPage> {
           }
         }
 
+        // --- NEW: 2FA CHECK LOGIC (SSO) ---
+        bool is2FAEnabled = false;
+        if (userDoc.data() != null) {
+          Map<String, dynamic> data = userDoc.data() as Map<String, dynamic>;
+          is2FAEnabled = data['is2FAEnabled'] ?? false;
+        }
+
         if (mounted) {
           setState(() => _isLoading = false);
           _showSnackBar('Welcome back!', Colors.green);
           
-          // Navigate to home screen
-          Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(builder: (context) => const HomeScreen()),
-          );
+          if (is2FAEnabled) {
+            // If 2FA is ON -> Go to OTP Screen
+            Navigator.push(
+              context,
+              MaterialPageRoute(builder: (context) => OTPScreen()),
+            );
+          } else {
+            // If 2FA is OFF -> Go to Home
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(builder: (context) => const HomeScreen()),
+            );
+          }
         }
       }
     } on FirebaseAuthException catch (e) {

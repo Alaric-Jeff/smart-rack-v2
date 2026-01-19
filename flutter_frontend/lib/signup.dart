@@ -4,8 +4,7 @@ import 'package:flutter/gestures.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-// Note: Ensure you removed 'terms_and_condtions.dart' import if you are using the modal now,
-// or keep it if you still have the file.
+import 'terms_and_condtions.dart';
 import 'home.dart';
 
 class CreateAccountScreen extends StatefulWidget {
@@ -22,18 +21,29 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
   bool _isLoading = false;
   bool _canResendEmail = true;
   int _resendCooldownSeconds = 0;
+  
+  // --- ADDED: Fix for Gmail Backspace Loop ---
+  int _lastEmailLength = 0; 
+
+  // --- ADDED: Password Validation State Variables ---
+  bool _hasMinLength = false;
+  bool _hasUppercase = false;
+  bool _hasLowercase = false;
+  bool _hasNumber = false;
+  bool _hasSpecialChar = false;
 
   // Controllers
   final TextEditingController _firstNameController = TextEditingController();
   final TextEditingController _lastNameController = TextEditingController();
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
-  final TextEditingController _confirmPasswordController = TextEditingController();
+  final TextEditingController _confirmPasswordController =
+      TextEditingController();
 
   // Firebase Auth & Firestore
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  
+
   // Google Sign In
   final GoogleSignIn _googleSignIn = GoogleSignIn();
 
@@ -47,22 +57,45 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
   @override
   void initState() {
     super.initState();
-    // Add listener to email controller for auto-complete
-    _emailController.addListener(_onEmailChanged);
-  }
-
-  void _onEmailChanged() {
-    final text = _emailController.text;
     
-    // Logic kept as per your original placeholder (empty for now to avoid bugs)
-    if (text.isNotEmpty && !text.contains('@')) {
-       // logic here
-    }
+    // Initialize email length tracker
+    _lastEmailLength = _emailController.text.length;
+
+    // --- UPDATED: Smarter Gmail Listener (Fixes Backspace Trap) ---
+    _emailController.addListener(() {
+      final text = _emailController.text;
+      final newLength = text.length;
+
+      // Only run auto-complete if the user ADDED text (typing), not deleting.
+      if (newLength > _lastEmailLength) {
+        if (text.endsWith('@g') && !text.contains('@gmail.com')) {
+          setState(() {
+            _emailController.text = "${text}mail.com";
+            // Move cursor to end
+            _emailController.selection = TextSelection.fromPosition(
+                TextPosition(offset: _emailController.text.length));
+          });
+        }
+      }
+      // Update the tracker for the next keystroke
+      _lastEmailLength = _emailController.text.length; 
+    });
+
+    // --- ADDED: Password Validation Listener ---
+    _passwordController.addListener(() {
+      final val = _passwordController.text;
+      setState(() {
+        _hasMinLength = val.length >= 8;
+        _hasUppercase = val.contains(RegExp(r'[A-Z]'));
+        _hasLowercase = val.contains(RegExp(r'[a-z]'));
+        _hasNumber = val.contains(RegExp(r'[0-9]'));
+        _hasSpecialChar = val.contains(RegExp(r'[!@#$%^&*(),.?":{}|<>]'));
+      });
+    });
   }
 
   @override
   void dispose() {
-    _firstNameController.removeListener(_onEmailChanged); // Clean up listener
     _firstNameController.dispose();
     _lastNameController.dispose();
     _emailController.dispose();
@@ -71,80 +104,159 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
     super.dispose();
   }
 
-  // --- NEW FEATURE: Helper to append @gmail.com ---
-  void _appendGmail() {
-    final currentText = _emailController.text;
-    // Only append if not empty and doesn't have @ symbol yet
-    if (currentText.isNotEmpty && !currentText.contains('@')) {
-      setState(() {
-        _emailController.text = '$currentText@gmail.com';
-        // Move cursor to end
-        _emailController.selection = TextSelection.fromPosition(
-          TextPosition(offset: _emailController.text.length),
-        );
-      });
-    }
-  }
+  // --- ADDED: Function to Show Scrollable Terms Modal ---
+  void _showTermsAndConditionsModal() {
+    final ScrollController scrollController = ScrollController();
+    // Using ValueNotifier to track if bottom is reached to rebuild only the button
+    final ValueNotifier<bool> reachedBottom = ValueNotifier(false);
 
-  // --- NEW FEATURE: Terms & Conditions Modal ---
-  void _showTermsDialog() {
+    scrollController.addListener(() {
+      if (scrollController.position.pixels >=
+          scrollController.position.maxScrollExtent - 50) { // -50 for buffer
+        if (!reachedBottom.value) {
+          reachedBottom.value = true;
+        }
+      }
+    });
+
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text("Terms & Conditions", style: TextStyle(fontWeight: FontWeight.bold)),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        content: const Scrollbar(
-          child: SingleChildScrollView(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text("1. Acceptance", style: TextStyle(fontWeight: FontWeight.bold)),
-                Text("By creating an account, you agree to comply with all terms regarding the use of the Smart Rack system."),
-                SizedBox(height: 12),
-                Text("2. User Responsibilities", style: TextStyle(fontWeight: FontWeight.bold)),
-                Text("You are responsible for maintaining the confidentiality of your account credentials and for all activities under your account."),
-                SizedBox(height: 12),
-                Text("3. Hardware Usage", style: TextStyle(fontWeight: FontWeight.bold)),
-                Text("The Smart Rack app controls physical hardware. Please ensure the rack area is clear before operating remotely. We are not liable for damage caused by improper use."),
-                SizedBox(height: 12),
-                Text("4. Data Privacy", style: TextStyle(fontWeight: FontWeight.bold)),
-                Text("We collect your email and device usage statistics to improve the service. We do not sell your personal data."),
-              ],
-            ),
+        title: const Text("Terms and Conditions"),
+        content: SizedBox(
+          height: 400, // Fixed height to ensure scrolling
+          width: double.maxFinite,
+          child: Column(
+            children: [
+              const Text(
+                "Please read to the bottom to agree.",
+                style: TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+              const SizedBox(height: 10),
+              Expanded(
+                child: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    border: Border.all(color: Colors.grey.shade300),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: SingleChildScrollView(
+                    controller: scrollController,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // Simulating long text for demonstration
+                        const Text(
+                          "SMART RACK TERMS OF SERVICE\n\n",
+                          style: TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                        Text(
+                          List.generate(
+                                  30,
+                                  (index) =>
+                                      "Clause ${index + 1}: By using Smart Rack, you agree to allow the device to automate laundry drying processes. This includes data collection regarding weather patterns and usage statistics.\n\n")
+                              .join(),
+                          style: const TextStyle(fontSize: 14),
+                        ),
+                        const Text(
+                          "--- END OF TERMS ---",
+                          style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontStyle: FontStyle.italic),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text("Close", style: TextStyle(color: Colors.grey)),
+            child: const Text("Cancel", style: TextStyle(color: Colors.grey)),
           ),
-          ElevatedButton(
-            onPressed: () {
-              setState(() => _isChecked = true); // Auto-check the box when they agree
-              Navigator.pop(context);
+          ValueListenableBuilder<bool>(
+            valueListenable: reachedBottom,
+            builder: (context, canAgree, child) {
+              return ElevatedButton(
+                onPressed: canAgree
+                    ? () {
+                        setState(() {
+                          _isChecked = true;
+                        });
+                        Navigator.pop(context);
+                        _showSnackBar(
+                            "Terms Accepted", Colors.green);
+                      }
+                    : null, // Disabled until scrolled
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: canAgree ? _primaryColor : Colors.grey,
+                  foregroundColor: Colors.white,
+                ),
+                child: Text(canAgree ? "I AGREE" : "Read to Bottom"),
+              );
             },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: _primaryColor,
-              foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-            ),
-            child: const Text("I Agree"),
           ),
         ],
       ),
     );
   }
 
+  // --- ADDED: Widget to display visual Password Hints ---
+  Widget _buildPasswordValidationRules() {
+    return Column(
+      children: [
+        const SizedBox(height: 8),
+        _buildValidationRow("At least 8 characters", _hasMinLength),
+        _buildValidationRow("Uppercase letter (A-Z)", _hasUppercase),
+        _buildValidationRow("Lowercase letter (a-z)", _hasLowercase),
+        _buildValidationRow("Number (0-9)", _hasNumber),
+        _buildValidationRow("Special character (!@#\$...)", _hasSpecialChar),
+        const SizedBox(height: 12),
+      ],
+    );
+  }
+
+  Widget _buildValidationRow(String text, bool isValid) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4.0),
+      child: Row(
+        children: [
+          Icon(
+            isValid ? Icons.check_circle : Icons.circle_outlined,
+            color: isValid ? Colors.green : Colors.grey,
+            size: 16,
+          ),
+          const SizedBox(width: 8),
+          Text(
+            text,
+            style: TextStyle(
+              color: isValid ? Colors.green[700] : Colors.grey,
+              fontSize: 12,
+              decoration:
+                  isValid ? TextDecoration.lineThrough : TextDecoration.none,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Start cooldown timer for resend email (removed - now handled inline in dialog)
+
   // ✨ Enhanced Manual Signup with Email Verification
   Future<void> _handleSignup() async {
     if (!_isChecked) {
-      _showSnackBar('Please agree to the Terms and Conditions to continue', Colors.red);
+      _showSnackBar(
+          'Please agree to the Terms and Conditions to continue', Colors.red);
       return;
     }
 
     if (!_formKey.currentState!.validate()) {
-      _showSnackBar('Please fix the errors in the form before submitting', Colors.orange);
+      _showSnackBar(
+          'Please fix the errors in the form before submitting', Colors.orange);
       return;
     }
 
@@ -152,7 +264,8 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
 
     try {
       // Step 1: Create Firebase Auth user
-      UserCredential userCredential = await _auth.createUserWithEmailAndPassword(
+      UserCredential userCredential =
+          await _auth.createUserWithEmailAndPassword(
         email: _emailController.text.trim(),
         password: _passwordController.text,
       );
@@ -167,7 +280,8 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
         'uuid': uuid,
         'firstName': _firstNameController.text.trim(),
         'lastName': _lastNameController.text.trim(),
-        'displayName': '${_firstNameController.text.trim()} ${_lastNameController.text.trim()}',
+        'displayName':
+            '${_firstNameController.text.trim()} ${_lastNameController.text.trim()}',
         'email': _emailController.text.trim(),
         'contactNumber': null,
         'signInProvider': 'manual',
@@ -187,19 +301,23 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
       if (mounted) {
         setState(() => _isLoading = false);
         String errorMessage = 'An error occurred during signup';
-        
+
         switch (e.code) {
           case 'email-already-in-use':
-            errorMessage = 'This email address is already registered. Please use a different email or try logging in.';
+            errorMessage =
+                'This email address is already registered. Please use a different email or try logging in.';
             break;
           case 'invalid-email':
-            errorMessage = 'The email address format is invalid. Please check and try again.';
+            errorMessage =
+                'The email address format is invalid. Please check and try again.';
             break;
           case 'weak-password':
-            errorMessage = 'The password provided is too weak. Please use a stronger password.';
+            errorMessage =
+                'The password provided is too weak. Please use a stronger password.';
             break;
           case 'operation-not-allowed':
-            errorMessage = 'Email/password accounts are currently disabled. Please contact support.';
+            errorMessage =
+                'Email/password accounts are currently disabled. Please contact support.';
             break;
           default:
             errorMessage = e.message ?? 'Signup failed. Please try again.';
@@ -209,14 +327,16 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
     } catch (e) {
       if (mounted) {
         setState(() => _isLoading = false);
-        
+
         try {
           await _auth.currentUser?.delete();
         } catch (deleteError) {
-          debugPrint('Failed to delete user after Firestore error: $deleteError');
+          debugPrint(
+              'Failed to delete user after Firestore error: $deleteError');
         }
-        
-        _showSnackBar('An unexpected error occurred. Please try again later.', Colors.red);
+
+        _showSnackBar(
+            'An unexpected error occurred. Please try again later.', Colors.red);
       }
     }
   }
@@ -230,10 +350,12 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
         return StatefulBuilder(
           builder: (context, setDialogState) {
             return AlertDialog(
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16)),
               title: Row(
                 children: [
-                  Icon(Icons.mark_email_unread, color: _primaryColor, size: 28),
+                  Icon(Icons.mark_email_unread,
+                      color: _primaryColor, size: 28),
                   const SizedBox(width: 10),
                   const Text('Verify Your Email'),
                 ],
@@ -268,15 +390,17 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                       ? () async {
                           try {
                             await user.sendEmailVerification();
-                            
+
                             // Start cooldown and update dialog
                             setState(() {
                               _canResendEmail = false;
                               _resendCooldownSeconds = 60;
                             });
-                            
-                            _showSnackBar('Verification email resent successfully', Colors.green);
-                            
+
+                            _showSnackBar(
+                                'Verification email resent successfully',
+                                Colors.green);
+
                             // Countdown timer that updates both main state and dialog state
                             Future.doWhile(() async {
                               await Future.delayed(const Duration(seconds: 1));
@@ -293,9 +417,13 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                             });
                           } on FirebaseAuthException catch (e) {
                             if (e.code == 'too-many-requests') {
-                              _showSnackBar('Too many requests. Please wait before trying again.', Colors.orange);
+                              _showSnackBar(
+                                  'Too many requests. Please wait before trying again.',
+                                  Colors.orange);
                             } else {
-                              _showSnackBar('Failed to resend email. Please try again later.', Colors.red);
+                              _showSnackBar(
+                                  'Failed to resend email. Please try again later.',
+                                  Colors.red);
                             }
                           }
                         }
@@ -314,34 +442,46 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                     try {
                       await user.reload();
                       User? refreshedUser = _auth.currentUser;
-                      
-                      if (refreshedUser != null && refreshedUser.emailVerified) {
-                        await _firestore.collection('users').doc(refreshedUser.uid).update({
+
+                      if (refreshedUser != null &&
+                          refreshedUser.emailVerified) {
+                        await _firestore
+                            .collection('users')
+                            .doc(refreshedUser.uid)
+                            .update({
                           'emailVerified': true,
                           'updatedAt': FieldValue.serverTimestamp(),
                         });
-                        
+
                         Navigator.of(dialogContext).pop();
-                        _showSnackBar('Email verified! Account created successfully.', Colors.green);
-                        
+                        _showSnackBar(
+                            'Email verified! Account created successfully.',
+                            Colors.green);
+
                         if (mounted) {
                           Navigator.pushReplacement(
                             context,
-                            MaterialPageRoute(builder: (_) => const HomeScreen()),
+                            MaterialPageRoute(
+                                builder: (_) => const HomeScreen()),
                           );
                         }
                       } else {
-                        _showSnackBar('Email not verified yet. Please check your inbox and click the verification link.', Colors.orange);
+                        _showSnackBar(
+                            'Email not verified yet. Please check your inbox and click the verification link.',
+                            Colors.orange);
                       }
                     } catch (e) {
-                      _showSnackBar('Failed to verify email status. Please try again.', Colors.red);
+                      _showSnackBar(
+                          'Failed to verify email status. Please try again.',
+                          Colors.red);
                       debugPrint('Verification check error: $e');
                     }
                   },
                   style: ElevatedButton.styleFrom(
                     backgroundColor: _primaryColor,
                     foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8)),
                   ),
                   child: const Text('I\'ve Verified'),
                 ),
@@ -359,32 +499,35 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
 
     try {
       final GoogleSignInAccount? googleUser = await _googleSignIn.signIn();
-      
+
       if (googleUser == null) {
         setState(() => _isLoading = false);
         return;
       }
 
-      final GoogleSignInAuthentication googleAuth = await googleUser.authentication;
+      final GoogleSignInAuthentication googleAuth =
+          await googleUser.authentication;
 
       final credential = GoogleAuthProvider.credential(
         accessToken: googleAuth.accessToken,
         idToken: googleAuth.idToken,
       );
 
-      UserCredential userCredential = await _auth.signInWithCredential(credential);
+      UserCredential userCredential =
+          await _auth.signInWithCredential(credential);
       User? user = userCredential.user;
 
       if (user != null) {
         String uuid = user.uid;
-        
-        DocumentSnapshot existingUser = await _firestore.collection('users').doc(uuid).get();
-        
+
+        DocumentSnapshot existingUser =
+            await _firestore.collection('users').doc(uuid).get();
+
         if (existingUser.exists) {
           if (mounted) {
             setState(() => _isLoading = false);
             _showSnackBar('Welcome back! Signing you in...', Colors.green);
-            
+
             Navigator.pushReplacement(
               context,
               MaterialPageRoute(builder: (_) => const HomeScreen()),
@@ -393,10 +536,12 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
           return;
         }
 
-        String displayName = user.displayName ?? googleUser.displayName ?? 'Google User';
+        String displayName =
+            user.displayName ?? googleUser.displayName ?? 'Google User';
         List<String> nameParts = displayName.split(' ');
         String firstName = nameParts.isNotEmpty ? nameParts[0] : '';
-        String lastName = nameParts.length > 1 ? nameParts.sublist(1).join(' ') : '';
+        String lastName =
+            nameParts.length > 1 ? nameParts.sublist(1).join(' ') : '';
 
         await _firestore.collection('users').doc(uuid).set({
           'uuid': uuid,
@@ -417,7 +562,7 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
         if (mounted) {
           setState(() => _isLoading = false);
           _showSnackBar('Google sign-up successful! Welcome!', Colors.green);
-          
+
           Navigator.pushReplacement(
             context,
             MaterialPageRoute(builder: (_) => const HomeScreen()),
@@ -427,40 +572,44 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
     } on FirebaseAuthException catch (e) {
       if (mounted) {
         setState(() => _isLoading = false);
-        
+
         String errorMessage = 'Google authentication failed';
         switch (e.code) {
           case 'account-exists-with-different-credential':
-            errorMessage = 'An account with this email already exists using a different sign-in method.';
+            errorMessage =
+                'An account with this email already exists using a different sign-in method.';
             break;
           case 'invalid-credential':
             errorMessage = 'Invalid credentials provided. Please try again.';
             break;
           case 'operation-not-allowed':
-            errorMessage = 'Google sign-in is currently disabled. Please contact support.';
+            errorMessage =
+                'Google sign-in is currently disabled. Please contact support.';
             break;
           case 'user-disabled':
-            errorMessage = 'This account has been disabled. Please contact support.';
+            errorMessage =
+                'This account has been disabled. Please contact support.';
             break;
           default:
-            errorMessage = e.message ?? 'Google authentication failed. Please try again.';
+            errorMessage =
+                e.message ?? 'Google authentication failed. Please try again.';
         }
-        
+
         _showSnackBar(errorMessage, Colors.red);
       }
     } catch (e) {
       if (mounted) {
         setState(() => _isLoading = false);
-        
+
         try {
           await _googleSignIn.signOut();
-          
+
           if (_auth.currentUser != null) {
             DocumentSnapshot check = await _firestore
                 .collection('users')
                 .doc(_auth.currentUser!.uid)
                 .get();
-            
+
             if (!check.exists) {
               await _auth.currentUser?.delete();
             }
@@ -468,8 +617,9 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
         } catch (cleanupError) {
           debugPrint('Cleanup error: $cleanupError');
         }
-        
-        _showSnackBar('An unexpected error occurred. Please try again.', Colors.red);
+
+        _showSnackBar(
+            'An unexpected error occurred. Please try again.', Colors.red);
         debugPrint('Google SSO Error: $e');
       }
     }
@@ -496,7 +646,8 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
       backgroundColor: _backgroundColor,
       body: Center(
         child: SingleChildScrollView(
-          padding: EdgeInsets.symmetric(horizontal: screenWidth * 0.05, vertical: 20),
+          padding: EdgeInsets.symmetric(
+              horizontal: screenWidth * 0.05, vertical: 20),
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 450),
             child: Container(
@@ -521,7 +672,10 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                     Center(
                       child: Text(
                         'Create Account',
-                        style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: _textColor),
+                        style: TextStyle(
+                            fontSize: 22,
+                            fontWeight: FontWeight.bold,
+                            color: _textColor),
                       ),
                     ),
                     const SizedBox(height: 20),
@@ -538,31 +692,32 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                               if (value == null || value.isEmpty) {
                                 return 'First name is required';
                               }
-                              
+
                               String trimmed = value.trim();
-                              
+
                               if (trimmed.length < 3) {
                                 return 'Must be at least 3 characters';
                               }
                               if (trimmed.length > 50) {
                                 return 'Must not exceed 50 characters';
                               }
-                              
+
                               // Check for numbers
                               if (RegExp(r'[0-9]').hasMatch(trimmed)) {
                                 return 'Numbers are not allowed';
                               }
-                              
+
                               // Check for double spaces
                               if (trimmed.contains('  ')) {
                                 return 'Multiple spaces are not allowed';
                               }
-                              
+
                               // Check for invalid special characters
-                              if (RegExp(r'[!@#$%^&*(),.?":{}|<>+=\[\]\\\/;`~_]').hasMatch(trimmed)) {
+                              if (RegExp(r'[!@#$%^&*(),.?":{}|<>+=\[\]\\\/;`~_]')
+                                  .hasMatch(trimmed)) {
                                 return 'Special characters are not allowed';
                               }
-                              
+
                               return null;
                             },
                           ),
@@ -577,31 +732,32 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                               if (value == null || value.isEmpty) {
                                 return 'Last name is required';
                               }
-                              
+
                               String trimmed = value.trim();
-                              
+
                               if (trimmed.length < 3) {
                                 return 'Must be at least 3 characters';
                               }
                               if (trimmed.length > 50) {
                                 return 'Must not exceed 50 characters';
                               }
-                              
+
                               // Check for numbers
                               if (RegExp(r'[0-9]').hasMatch(trimmed)) {
                                 return 'Numbers are not allowed';
                               }
-                              
+
                               // Check for double spaces
                               if (trimmed.contains('  ')) {
                                 return 'Multiple spaces are not allowed';
                               }
-                              
+
                               // Check for invalid special characters
-                              if (RegExp(r'[!@#$%^&*(),.?":{}|<>+=\[\]\\\/;`~_]').hasMatch(trimmed)) {
+                              if (RegExp(r'[!@#$%^&*(),.?":{}|<>+=\[\]\\\/;`~_]')
+                                  .hasMatch(trimmed)) {
                                 return 'Special characters are not allowed';
                               }
-                              
+
                               return null;
                             },
                           ),
@@ -610,29 +766,18 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                     ),
                     const SizedBox(height: 12),
 
-                    // Email with @gmail.com helper (UPDATED SECTION)
+                    // Email
                     _buildLabelAndField(
                       label: 'EMAIL',
                       hint: 'kirby@example.com',
                       controller: _emailController,
                       keyboardType: TextInputType.emailAddress,
-                      suffix: IconButton(
-                        icon: const Text(
-                          '@gmail.com',
-                          style: TextStyle(
-                            color: Colors.grey,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 12,
-                          ),
-                        ),
-                        onPressed: _appendGmail,
-                        tooltip: 'Quick add @gmail.com',
-                      ),
                       validator: (value) {
                         if (value == null || value.isEmpty) {
                           return 'Email address is required';
                         }
-                        if (!RegExp(r'^[\w\.-]+@[\w\.-]+\.\w{2,}$').hasMatch(value)) {
+                        if (!RegExp(r'^[\w\.-]+@[\w\.-]+\.\w{2,}$')
+                            .hasMatch(value)) {
                           return 'Please enter a valid email address';
                         }
                         return null;
@@ -647,32 +792,26 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                       controller: _passwordController,
                       isPassword: true,
                       isVisible: _isPasswordVisible,
-                      onVisibilityChanged: () => setState(() => _isPasswordVisible = !_isPasswordVisible),
+                      onVisibilityChanged: () => setState(
+                          () => _isPasswordVisible = !_isPasswordVisible),
                       validator: (value) {
                         if (value == null || value.isEmpty) {
                           return 'Password is required';
                         }
-                        if (value.length < 8) {
-                          return 'Must be at least 8 characters';
-                        }
-                        if (value.length > 50) {
-                          return 'Must not exceed 50 characters';
-                        }
-                        if (!RegExp(r'[A-Z]').hasMatch(value)) {
-                          return 'Must contain at least one uppercase letter';
-                        }
-                        if (!RegExp(r'[a-z]').hasMatch(value)) {
-                          return 'Must contain at least one lowercase letter';
-                        }
-                        if (!RegExp(r'[0-9]').hasMatch(value)) {
-                          return 'Must contain at least one number';
-                        }
-                        if (!RegExp(r'[!@#$%^&*(),.?":{}|<>]').hasMatch(value)) {
-                          return 'Must contain at least one special character';
+                        // Validation logic handled visually, but we verify here for form submit
+                        if (!_hasMinLength ||
+                            !_hasUppercase ||
+                            !_hasLowercase ||
+                            !_hasNumber ||
+                            !_hasSpecialChar) {
+                          return 'Please fulfill all password requirements below';
                         }
                         return null;
                       },
                     ),
+                    // --- Visual Password Hints ---
+                    _buildPasswordValidationRules(),
+
                     const SizedBox(height: 12),
 
                     // Confirm Password
@@ -682,7 +821,8 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                       controller: _confirmPasswordController,
                       isPassword: true,
                       isVisible: _isPasswordVisible,
-                      onVisibilityChanged: () => setState(() => _isPasswordVisible = !_isPasswordVisible),
+                      onVisibilityChanged: () => setState(
+                          () => _isPasswordVisible = !_isPasswordVisible),
                       validator: (value) {
                         if (value == null || value.isEmpty) {
                           return 'Please confirm your password';
@@ -695,7 +835,7 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                     ),
                     const SizedBox(height: 15),
 
-                    // Checkbox & Terms (UPDATED SECTION)
+                    // Checkbox & Terms
                     Row(
                       crossAxisAlignment: CrossAxisAlignment.center,
                       children: [
@@ -705,8 +845,16 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                           child: Checkbox(
                             value: _isChecked,
                             activeColor: _primaryColor,
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
-                            onChanged: (bool? value) => setState(() => _isChecked = value ?? false),
+                            shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(4)),
+                            onChanged: (bool? value) {
+                              // If unchecking, allow it. If checking, force modal
+                              if (value == false) {
+                                setState(() => _isChecked = false);
+                              } else {
+                                _showTermsAndConditionsModal();
+                              }
+                            },
                           ),
                         ),
                         const SizedBox(width: 8),
@@ -714,7 +862,8 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                           child: RichText(
                             text: TextSpan(
                               text: 'I agree to the ',
-                              style: TextStyle(color: _labelColor, fontSize: 13),
+                              style:
+                                  TextStyle(color: _labelColor, fontSize: 13),
                               children: [
                                 TextSpan(
                                   text: 'Terms and Conditions',
@@ -724,8 +873,11 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                                     decoration: TextDecoration.underline,
                                     decorationColor: Colors.blueAccent,
                                   ),
-                                  // Calls the new modal function instead of navigation
-                                  recognizer: TapGestureRecognizer()..onTap = _showTermsDialog,
+                                  recognizer: TapGestureRecognizer()
+                                    ..onTap = () {
+                                      // --- Open Scrollable Modal ---
+                                      _showTermsAndConditionsModal();
+                                    },
                                 ),
                               ],
                             ),
@@ -744,13 +896,16 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                         style: ElevatedButton.styleFrom(
                           backgroundColor: _primaryColor,
                           foregroundColor: Colors.white,
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12)),
                           elevation: 0,
                         ),
                         child: _isLoading
-                            ? const CircularProgressIndicator(color: Colors.white, strokeWidth: 2)
+                            ? const CircularProgressIndicator(
+                                color: Colors.white, strokeWidth: 2)
                             : const Text('CREATE ACCOUNT',
-                                style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+                                style: TextStyle(
+                                    fontSize: 15, fontWeight: FontWeight.bold)),
                       ),
                     ),
 
@@ -759,24 +914,25 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                     // SSO Divider
                     Row(
                       children: [
-                        Expanded(child: Divider(thickness: 0.5, color: Colors.grey[400])),
+                        Expanded(
+                            child: Divider(
+                                thickness: 0.5, color: Colors.grey[400])),
                         Padding(
                           padding: const EdgeInsets.symmetric(horizontal: 10),
                           child: Text('Or continue with',
-                              style: TextStyle(color: Colors.grey[600], fontSize: 12)),
+                              style: TextStyle(
+                                  color: Colors.grey[600], fontSize: 12)),
                         ),
-                        Expanded(child: Divider(thickness: 0.5, color: Colors.grey[400])),
+                        Expanded(
+                            child: Divider(
+                                thickness: 0.5, color: Colors.grey[400])),
                       ],
                     ),
                     const SizedBox(height: 15),
 
                     // Google SSO Button
-                    _buildBigSocialButton(
-                      "Google", 
-                      'assets/google.png', 
-                      Icons.g_mobiledata, 
-                      _handleGoogleSignUp
-                    ),
+                    _buildBigSocialButton("Google", 'assets/google.png',
+                        Icons.g_mobiledata, _handleGoogleSignUp),
 
                     const SizedBox(height: 15),
 
@@ -790,7 +946,9 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                           onPressed: () => Navigator.pop(context),
                           child: const Text('Log In',
                               style: TextStyle(
-                                  color: Colors.blueAccent, fontWeight: FontWeight.bold, fontSize: 13)),
+                                  color: Colors.blueAccent,
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 13)),
                         ),
                       ],
                     ),
@@ -806,7 +964,6 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
 
   // --- Helper Widgets ---
 
-  // Updated to accept 'suffix' widget for the @gmail button
   Widget _buildLabelAndField({
     required String label,
     required String hint,
@@ -816,25 +973,13 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
     bool isVisible = false,
     VoidCallback? onVisibilityChanged,
     TextInputType? keyboardType,
-    Widget? suffix, // Optional custom suffix
   }) {
-    // Determine suffix icon: either custom suffix, password toggle, or null
-    Widget? effectiveSuffix;
-    if (suffix != null) {
-      effectiveSuffix = suffix;
-    } else if (isPassword) {
-      effectiveSuffix = IconButton(
-        icon: Icon(isVisible ? Icons.visibility : Icons.visibility_off,
-            color: _labelColor, size: 20),
-        onPressed: onVisibilityChanged,
-      );
-    }
-
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(label,
-            style: TextStyle(color: _labelColor, fontSize: 11, fontWeight: FontWeight.bold)),
+            style: TextStyle(
+                color: _labelColor, fontSize: 11, fontWeight: FontWeight.bold)),
         const SizedBox(height: 6),
         TextFormField(
           controller: controller,
@@ -845,10 +990,20 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
           autovalidateMode: AutovalidateMode.onUserInteraction,
           decoration: InputDecoration(
             hintText: hint,
-            hintStyle: TextStyle(color: _labelColor.withOpacity(0.7), fontSize: 14),
-            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            hintStyle:
+                TextStyle(color: _labelColor.withOpacity(0.7), fontSize: 14),
+            contentPadding:
+                const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
             isDense: true,
-            suffixIcon: effectiveSuffix,
+            suffixIcon: isPassword
+                ? IconButton(
+                    icon: Icon(
+                        isVisible ? Icons.visibility : Icons.visibility_off,
+                        color: _labelColor,
+                        size: 20),
+                    onPressed: onVisibilityChanged,
+                  )
+                : null,
             enabledBorder: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(12),
                 borderSide: BorderSide(color: _labelColor.withOpacity(0.3))),
@@ -870,8 +1025,8 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
     );
   }
 
-  Widget _buildBigSocialButton(
-      String text, String imagePath, IconData fallbackIcon, VoidCallback onTap) {
+  Widget _buildBigSocialButton(String text, String imagePath,
+      IconData fallbackIcon, VoidCallback onTap) {
     return SizedBox(
       width: double.infinity,
       height: 45,
@@ -879,7 +1034,8 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
         onPressed: _isLoading ? null : onTap,
         style: OutlinedButton.styleFrom(
           side: BorderSide(color: Colors.grey.shade300),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
           backgroundColor: Colors.white,
         ),
         child: Row(
@@ -887,12 +1043,14 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
           children: [
             Image.asset(imagePath,
                 height: 20,
-                errorBuilder: (ctx, err, stack) =>
-                    Icon(fallbackIcon, size: 20, color: const Color(0xFF2762EA))),
+                errorBuilder: (ctx, err, stack) => Icon(fallbackIcon,
+                    size: 20, color: const Color(0xFF2762EA))),
             const SizedBox(width: 10),
             Text(text,
-                style:
-                    const TextStyle(color: Colors.black87, fontWeight: FontWeight.bold, fontSize: 14)),
+                style: const TextStyle(
+                    color: Colors.black87,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 14)),
           ],
         ),
       ),
