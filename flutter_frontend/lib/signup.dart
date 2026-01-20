@@ -4,7 +4,6 @@ import 'package:flutter/gestures.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'terms_and_condtions.dart';
 import 'home.dart';
 
 class CreateAccountScreen extends StatefulWidget {

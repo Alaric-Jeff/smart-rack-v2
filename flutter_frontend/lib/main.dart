@@ -138,7 +138,7 @@ class _LoginPageState extends State<LoginPage> {
           // If 2FA is ON -> Go to OTP Screen
           Navigator.push(
             context,
-            MaterialPageRoute(builder: (context) => OTPScreen()),
+            MaterialPageRoute(builder: (context) => const OTPScreen()),
           );
         } else {
           // If 2FA is OFF -> Go to Home
@@ -553,7 +553,7 @@ class _LoginPageState extends State<LoginPage> {
             // If 2FA is ON -> Go to OTP Screen
             Navigator.push(
               context,
-              MaterialPageRoute(builder: (context) => OTPScreen()),
+              MaterialPageRoute(builder: (context) => const OTPScreen()),
             );
           } else {
             // If 2FA is OFF -> Go to Home
