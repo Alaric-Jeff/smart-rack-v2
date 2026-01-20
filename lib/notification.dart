@@ -215,7 +215,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text("Alerts", style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
-                      Text("Swipe left to delete", style: TextStyle(fontSize: 12, color: Colors.grey)),
+                      Text("System Notification", style: TextStyle(fontSize: 12, color: Colors.grey)),
                     ],
                   ),
                   Row(

@@ -768,7 +768,7 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                     // Email
                     _buildLabelAndField(
                       label: 'EMAIL',
-                      hint: 'kirby@example.com',
+                      hint: 'userexample123@gmail.com',
                       controller: _emailController,
                       keyboardType: TextInputType.emailAddress,
                       validator: (value) {
