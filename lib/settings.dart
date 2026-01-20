@@ -23,6 +23,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _notificationsEnabled = true; 
   double _rainSensitivity = 0.0;     
   
+  // --- NEW: 2FA State ---
+  bool _is2FAEnabled = false;
+
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   
@@ -104,6 +107,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
         String email = data['email'] ?? user.email ?? 'No email';
         String? photoUrl = data['photoUrl'];
         Timestamp? createdAt = data['createdAt'];
+        
+        // --- NEW: Load 2FA Status ---
+        bool is2FA = data['is2FAEnabled'] ?? false;
 
         String finalDisplayName;
         if (displayName != null && displayName.isNotEmpty) {
@@ -131,6 +137,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             _deviceId = deviceId;
             _memberSince = memberSince;
             _userProfileUrl = photoUrl;
+            _is2FAEnabled = is2FA; // Set State
             _isLoadingUserData = false;
           });
         }
@@ -241,7 +248,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (key == 'rain_sensitivity') _rainSensitivity = value;
     });
 
-    // --- NEW: Notification Pop Up Logic ---
+    // --- Notification Pop Up Logic ---
     if (key == 'notifications' && value == true) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -261,6 +268,58 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (key == 'rain_sensitivity') await prefs.setDouble('rain_sensitivity', value);
     } catch (e) {
       debugPrint("Error saving setting: $e");
+    }
+  }
+
+  // --- NEW: TOGGLE 2FA LOGIC ---
+  Future<void> _toggle2FA(bool value) async {
+    final user = _auth.currentUser;
+    if (user == null) return;
+
+    try {
+      // 1. Check if phone is verified first
+      final userDoc = await _firestore.collection('users').doc(user.uid).get();
+      if (!userDoc.exists) return;
+
+      bool isPhoneVerified = userDoc.data()?['isPhoneVerified'] ?? false;
+
+      if (value == true && !isPhoneVerified) {
+        // ERROR: Phone not verified
+        if (mounted) {
+          showDialog(
+            context: context,
+            builder: (context) => AlertDialog(
+              title: const Text("Action Required", style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
+              content: const Text("You must verify your phone number in 'Account > Edit Profile' before enabling 2FA."),
+              actions: [
+                TextButton(onPressed: () => Navigator.pop(context), child: const Text("OK")),
+              ],
+            ),
+          );
+        }
+        return; // Stop here
+      }
+
+      // 2. If Verified, Toggle 2FA
+      await _firestore.collection('users').doc(user.uid).update({
+        'is2FAEnabled': value
+      });
+
+      setState(() {
+        _is2FAEnabled = value;
+      });
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(value ? "2-Factor Authentication Enabled" : "2-Factor Authentication Disabled"),
+            backgroundColor: value ? Colors.green : Colors.grey,
+          ),
+        );
+      }
+
+    } catch (e) {
+      debugPrint("Error toggling 2FA: $e");
     }
   }
 
@@ -574,6 +633,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20), boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.02), blurRadius: 10, offset: const Offset(0, 4))]),
                 child: Column(
                   children: [
+                    // --- NEW: 2FA SWITCH ---
+                    _buildSwitchTile(
+                      title: "2-Factor Auth",
+                      subtitle: "Secure login with OTP",
+                      icon: Icons.security_outlined,
+                      value: _is2FAEnabled,
+                      onChanged: _toggle2FA, // Calls the new logic
+                    ),
+                    Divider(height: 1, color: Colors.grey.shade100, indent: 60, endIndent: 20),
+
                     _buildSwitchTile(
                       title: "Notifications", 
                       subtitle: "Receive alerts for rain and completion", 

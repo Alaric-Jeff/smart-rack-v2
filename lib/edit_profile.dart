@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart'; 
+import 'package:flutter/services.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'dart:convert'; // Added for API
@@ -17,13 +17,16 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   bool _isLoading = true;
   bool _isSaving = false;
 
+  // --- Track Verification Status ---
+  bool _isPhoneVerified = false;
+
   late TextEditingController _displayNameController;
   late TextEditingController _firstNameController;
   late TextEditingController _lastNameController;
   late TextEditingController _contactNumberController;
   late TextEditingController _addressController;
 
-  String? _photoUrl; 
+  String? _photoUrl;
   bool _hasPassword = false;
   String? _signInProvider;
 
@@ -44,6 +47,15 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     _firstNameController.addListener(() { if (mounted) setState(() {}); });
     _lastNameController.addListener(() { if (mounted) setState(() {}); });
 
+    // --- Reset verification if user changes the number ---
+    _contactNumberController.addListener(() {
+      if (_isPhoneVerified && mounted) {
+        setState(() {
+          _isPhoneVerified = false;
+        });
+      }
+    });
+
     _fetchUserData();
   }
 
@@ -57,27 +69,89 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     super.dispose();
   }
 
-  // --- NEW: ADDRESS API FUNCTION (OpenStreetMap) ---
+  // --- ADDRESS API FUNCTION (Using Photon) ---
   Future<List<String>> _fetchAddressSuggestions(String query) async {
-    if (query.length < 3) return []; // Only search after 3 chars
+    if (query.isEmpty) return [];
 
-    // Free OpenStreetMap Nominatim API
-    // Note: 'q' is query, 'limit' restricts results, 'countrycodes=ph' limits to Philippines (optional, remove if global)
-    final url = Uri.parse(
-        'https://nominatim.openstreetmap.org/search?q=$query&format=json&addressdetails=1&limit=5&countrycodes=ph');
+    // Photon API Endpoint
+    final url = Uri.parse('https://photon.komoot.io/api/?q=$query&limit=5');
 
     try {
-      // User-Agent is required by OSM policy
-      final response = await http.get(url, headers: {'User-Agent': 'SmartRackApp/1.0'});
+      final response = await http.get(url);
 
       if (response.statusCode == 200) {
-        final List data = json.decode(response.body);
-        return data.map((item) => item['display_name'] as String).toList();
+        final data = json.decode(response.body);
+        return (data['features'] as List).map((item) {
+          final props = item['properties'];
+          String name = props['name'] ?? '';
+          String street = props['street'] ?? '';
+          String city = props['city'] ?? props['state'] ?? '';
+          String country = props['country'] ?? '';
+          return [name, street, city, country]
+              .where((part) => part.isNotEmpty)
+              .join(', ');
+        }).toList();
       }
     } catch (e) {
       debugPrint("Address API Error: $e");
     }
     return [];
+  }
+
+  // --- PHONE VERIFICATION FUNCTION ---
+  void _verifyPhoneNumber() {
+    String number = _contactNumberController.text.trim();
+    if (number.length != 10 || !number.startsWith('9')) {
+      _showSnackBar("Please enter a valid 10-digit number starting with 9", Colors.red);
+      return;
+    }
+
+    // SIMULATED OTP DIALOG
+    TextEditingController otpController = TextEditingController();
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: const Text("Verify Phone Number"),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text("A verification code has been sent to +63 $number"),
+            const SizedBox(height: 10),
+            const Text("Demo Code: 123456", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.blue)),
+            const SizedBox(height: 20),
+            TextField(
+              controller: otpController,
+              keyboardType: TextInputType.number,
+              inputFormatters: [LengthLimitingTextInputFormatter(6)],
+              decoration: const InputDecoration(
+                labelText: "Enter 6-digit OTP",
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text("CANCEL"),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              if (otpController.text == "123456") {
+                setState(() => _isPhoneVerified = true);
+                Navigator.pop(context);
+                _showSnackBar("Phone number verified!", Colors.green);
+              } else {
+                _showSnackBar("Invalid OTP", Colors.red);
+              }
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF2962FF)),
+            child: const Text("VERIFY", style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
   }
 
   // --- AVATAR INITIALS HELPER ---
@@ -94,9 +168,9 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     String last = _lastNameController.text.trim();
     String firstLetter = first.isNotEmpty ? first[0] : "";
     String lastLetter = last.isNotEmpty ? last[0] : "";
-    
+
     String initials = (firstLetter + lastLetter).toUpperCase();
-    return initials.isEmpty ? "U" : initials; 
+    return initials.isEmpty ? "U" : initials;
   }
 
   Future<void> _fetchUserData() async {
@@ -115,22 +189,25 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
           _displayNameController.text = data['displayName'] ?? '';
           _firstNameController.text = data['firstName'] ?? '';
           _lastNameController.text = data['lastName'] ?? '';
-          
+
           String rawPhone = data['contactNumber'] ?? '';
           if (rawPhone.startsWith('+63')) {
-             _contactNumberController.text = rawPhone.substring(3);
+            _contactNumberController.text = rawPhone.substring(3);
           } else if (rawPhone.startsWith('09')) {
-             _contactNumberController.text = rawPhone.substring(1); 
+            _contactNumberController.text = rawPhone.substring(1);
           } else if (rawPhone.startsWith('0')) {
-             _contactNumberController.text = rawPhone.substring(1);
+            _contactNumberController.text = rawPhone.substring(1);
           } else {
-             _contactNumberController.text = rawPhone;
+            _contactNumberController.text = rawPhone;
           }
 
           _addressController.text = data['address'] ?? '';
           _photoUrl = data['photoUrl'];
           _signInProvider = data['signInProvider'];
-          
+
+          // --- Load Verification Status ---
+          _isPhoneVerified = data['isPhoneVerified'] ?? false;
+
           final passwordField = data['password'];
           _hasPassword = passwordField != null && passwordField is String && passwordField.isNotEmpty;
           _isLoading = false;
@@ -177,6 +254,9 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       updates['contactNumber'] = "+63${_contactNumberController.text.trim()}";
       updates['address'] = _addressController.text.trim();
       updates['updatedAt'] = FieldValue.serverTimestamp();
+      
+      // --- Save Verification Status ---
+      updates['isPhoneVerified'] = _isPhoneVerified;
 
       await _firestore.collection('users').doc(user.uid).update(updates);
 
@@ -305,8 +385,8 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
 
                 // --- 1. DISPLAY NAME ---
                 _buildTextField(
-                  "DISPLAY NAME", 
-                  _displayNameController, 
+                  "DISPLAY NAME",
+                  _displayNameController,
                   validator: (val) {
                     if (val == null || val.trim().isEmpty) return "Cannot be empty";
                     if (val.length < 3) return "Too short (min 3 chars)";
@@ -316,15 +396,15 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                 ),
                 const SizedBox(height: 16),
 
-                // --- 2. FIRST & LAST NAME (RESTRICTED INPUT) ---
+                // --- 2. FIRST & LAST NAME ---
                 Row(
                   children: [
                     Expanded(
                       child: _buildTextField(
-                        "FIRST NAME", 
-                        _firstNameController, 
+                        "FIRST NAME",
+                        _firstNameController,
                         inputFormatters: [
-                          FilteringTextInputFormatter.allow(RegExp(r'[a-zA-Z .-]')), 
+                          FilteringTextInputFormatter.allow(RegExp(r'[a-zA-Z .-]')),
                         ],
                         validator: (val) {
                           if (val == null || val.trim().isEmpty) return "Required";
@@ -336,8 +416,8 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                     const SizedBox(width: 16),
                     Expanded(
                       child: _buildTextField(
-                        "LAST NAME", 
-                        _lastNameController, 
+                        "LAST NAME",
+                        _lastNameController,
                         inputFormatters: [
                           FilteringTextInputFormatter.allow(RegExp(r'[a-zA-Z .-]')),
                         ],
@@ -352,17 +432,17 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                 ),
                 const SizedBox(height: 16),
 
-                // --- 3. PHONE NUMBER ---
+                // --- 3. PHONE NUMBER (WITH VERIFY & NOTICE) ---
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     const Text("PHONE NUMBER", style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF5A6175))),
                     const SizedBox(height: 8),
                     Row(
-                      crossAxisAlignment: CrossAxisAlignment.start, 
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Container(
-                          height: 55, 
+                          height: 55,
                           padding: const EdgeInsets.symmetric(horizontal: 12),
                           decoration: BoxDecoration(color: Colors.grey.shade100, borderRadius: BorderRadius.circular(12), border: Border.all(color: Colors.black87, width: 1.0)),
                           child: const Center(child: Text("+63", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.black54))),
@@ -384,18 +464,52 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                               focusedErrorBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Colors.red, width: 2)),
                             ),
                             validator: (value) {
-                              if (value == null || value.isEmpty) return "Required"; 
-                              if (!value.startsWith('9')) return "Must start with 9"; 
+                              if (value == null || value.isEmpty) return "Required";
+                              if (!value.startsWith('9')) return "Must start with 9";
                               if (value.length != 10) return "Must be 10 digits";
                               return null;
                             },
                           ),
                         ),
+                        // --- VERIFY BUTTON / CHECKMARK ---
+                        const SizedBox(width: 10),
+                        Container(
+                          height: 55,
+                          alignment: Alignment.center,
+                          child: _isPhoneVerified
+                            ? const Icon(Icons.check_circle, color: Colors.green, size: 30) // Verified
+                            : TextButton( // Not Verified
+                                onPressed: _verifyPhoneNumber,
+                                style: TextButton.styleFrom(
+                                  backgroundColor: const Color(0xFFE3F2FD),
+                                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                                ),
+                                child: const Text("Verify", style: TextStyle(color: Color(0xFF2962FF), fontWeight: FontWeight.bold)),
+                              ),
+                        ),
                       ],
                     ),
+                    
+                    // --- NEW: WARNING NOTICE IF NOT VERIFIED ---
+                    if (!_isPhoneVerified) ...[
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          Icon(Icons.warning_amber_rounded, color: Colors.orange.shade700, size: 16),
+                          const SizedBox(width: 5),
+                          Expanded(
+                            child: Text(
+                              "Phone number not verified. Tap 'Verify' to secure your account.",
+                              style: TextStyle(color: Colors.orange.shade700, fontSize: 12, fontWeight: FontWeight.bold),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
                   ],
                 ),
-                
+
                 const SizedBox(height: 16),
 
                 // --- 4. ADDRESS (NOW WITH AUTOCOMPLETE API) ---
@@ -406,18 +520,16 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                     const SizedBox(height: 8),
                     Autocomplete<String>(
                       optionsBuilder: (TextEditingValue textEditingValue) async {
-                        if (textEditingValue.text.length < 3) return const Iterable<String>.empty();
+                        if (textEditingValue.text.isEmpty) return const Iterable<String>.empty();
                         return await _fetchAddressSuggestions(textEditingValue.text);
                       },
                       onSelected: (String selection) {
                         _addressController.text = selection;
                       },
                       fieldViewBuilder: (context, controller, focusNode, onEditingComplete) {
-                        // Sync the autocomplete controller with our main controller
                         if (controller.text != _addressController.text) {
                           controller.text = _addressController.text;
                         }
-                        // Listen for changes
                         controller.addListener(() {
                           _addressController.text = controller.text;
                         });
@@ -473,7 +585,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                     ),
                   ],
                 ),
-                
+
                 const SizedBox(height: 30),
                 const Text("Security", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                 const SizedBox(height: 10),
@@ -507,11 +619,11 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
 
   // --- UPDATED HELPER WIDGET ---
   Widget _buildTextField(
-    String label, 
-    TextEditingController controller, 
+    String label,
+    TextEditingController controller,
     {
       String? Function(String?)? validator,
-      List<TextInputFormatter>? inputFormatters, 
+      List<TextInputFormatter>? inputFormatters,
     }
   ) {
     return Column(
@@ -522,7 +634,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
         TextFormField(
           controller: controller,
           validator: validator,
-          inputFormatters: inputFormatters, 
+          inputFormatters: inputFormatters,
           autovalidateMode: AutovalidateMode.onUserInteraction,
           decoration: InputDecoration(
             filled: true, fillColor: Colors.white,

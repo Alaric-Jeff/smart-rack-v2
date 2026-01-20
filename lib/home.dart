@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
+import 'dart:convert';
+import 'package:http/http.dart' as http;
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'dart:async';
-import 'dart:math'; 
-import 'package:firebase_auth/firebase_auth.dart'; 
-import 'package:cloud_firestore/cloud_firestore.dart'; 
 import 'controls.dart'; 
 import 'notification.dart';
 import 'settings.dart'; 
@@ -11,7 +12,7 @@ import 'edit_profile.dart';
 // ============================================
 // TOP LEVEL CONFIGURATION
 // ============================================
-const int SENSOR_UPDATE_INTERVAL_SECONDS = 10; // Updates every 10 seconds
+const int SENSOR_UPDATE_INTERVAL_SECONDS = 10;
 const int HISTORY_DURATION_MINUTES = 30;
 
 class HomeScreen extends StatefulWidget {
@@ -48,33 +49,19 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
         child: BottomNavigationBar(
           backgroundColor: Colors.white,
-          type: BottomNavigationBarType.fixed, // Ensures 4 items fit evenly
+          type: BottomNavigationBarType.fixed,
           selectedItemColor: const Color(0xFF2962FF),
           unselectedItemColor: Colors.grey,
           showUnselectedLabels: true,
-          
-          selectedFontSize: 11,
-          unselectedFontSize: 11,
-          
           currentIndex: _selectedIndex,
           onTap: (index) => setState(() => _selectedIndex = index),
           items: const [
+            BottomNavigationBarItem(icon: Icon(Icons.home_filled), label: "HOME"),
+            BottomNavigationBarItem(icon: Icon(Icons.tune), label: "CONTROLS"),
             BottomNavigationBarItem(
-              icon: Icon(Icons.home_filled), 
-              label: "HOME"
-            ),
+                icon: Icon(Icons.notifications_outlined), label: "NOTIFICATIONS"),
             BottomNavigationBarItem(
-              icon: Icon(Icons.tune), 
-              label: "CONTROLS"
-            ),
-            BottomNavigationBarItem(
-              icon: Icon(Icons.notifications_outlined), 
-              label: "ALERTS" 
-            ),
-            BottomNavigationBarItem(
-              icon: Icon(Icons.settings_outlined), 
-              label: "SETTINGS"
-            ),
+                icon: Icon(Icons.settings_outlined), label: "SETTINGS"),
           ],
         ),
       ),
@@ -93,204 +80,271 @@ class DashboardContent extends StatefulWidget {
 }
 
 class _DashboardContentState extends State<DashboardContent> {
-  // Firebase Instances for REAL User Data
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
-  // --- REAL USER DATA VARIABLES ---
-  String _userName = "Loading..."; 
-  String _userEmail = "...";
-  final String _deviceId = "LD-8D390DC"; // Static Device ID
-  String _memberSince = "...";
-  String? _userProfileUrl; 
+  // User data
+  String _userName = "Loading...";
+  String _userEmail = "Loading...";
+  String _deviceId = "N/A";
+  String _memberSince = "Loading...";
+  String? _userProfileUrl;
+  bool _isLoadingUser = true;
+  String? _currentDeviceConnected;
+  
+  // Profile Completion Check
+  bool _isProfileIncomplete = false;
 
-  // --- SIMULATION VARIABLES (FAKE SENSORS) ---
-  // Weather State
-  String _weatherCondition = "Sunny";
-  String _weatherDescription = "Clear skies";
-  IconData _weatherIcon = Icons.wb_sunny;
-  List<Color> _weatherGradient = [const Color(0xFF2962FF), const Color(0xFF448AFF)];
+  // Weather data
+  String _currentCity = "Locating...";
+  
+  // Sensor data
+  double _sensorHumidity = 0;
+  double _sensorTemperature = 0;
+  double _sensorLight = 0;
+  double _sensorRainIntensity = 4095; // Default to max (Dry)
+  
+  // Calculated rainfall confidence
+  double _rainConfidence = 0;
 
-  double _sensorHumidity = 65.5;
-  double _sensorTemperature = 28.5;
-  double _sensorLight = 850.0;
-  double _sensorRainIntensity = 4095; // 4095 = Dry, < 2000 = Rain
-  double _rainConfidence = 0.0;
-
-  // History Lists for Charts
+  // Time-series history (client-side, last 30 minutes)
   final List<SensorDataPoint> _humidityHistory = [];
   final List<SensorDataPoint> _tempHistory = [];
   final List<SensorDataPoint> _lightHistory = [];
   final List<SensorDataPoint> _rainHistory = [];
   final List<SensorDataPoint> _rainConfidenceHistory = [];
+  final List<double> _weatherHistory = [];
 
-  Timer? _simulationTimer;
-  final Random _random = Random();
+  Timer? _sensorUpdateTimer;
+  StreamSubscription<DocumentSnapshot>? _sensorSubscription;
 
   @override
   void initState() {
     super.initState();
     _fetchUserData();
-    _prefillHistory(); 
-    _startSimulation();
+    _fetchWeather();
+    _startSensorUpdates();
   }
 
   @override
   void dispose() {
-    _simulationTimer?.cancel();
+    _sensorUpdateTimer?.cancel();
+    _sensorSubscription?.cancel();
     super.dispose();
   }
 
-  // --- REAL: FETCH USER FROM FIREBASE ---
+  // --- Helper to Get Initials ---
+  String _getInitials(String name) {
+    if (name.isEmpty || name == "Loading...") return "";
+    List<String> nameParts = name.trim().split(RegExp(r'\s+')); 
+    if (nameParts.isEmpty) return "U";
+    
+    String first = nameParts[0].isNotEmpty ? nameParts[0][0] : "";
+    String last = nameParts.length > 1 && nameParts[1].isNotEmpty ? nameParts[1][0] : "";
+    
+    String initials = (first + last).toUpperCase();
+    return initials.isEmpty ? "U" : initials;
+  }
+
+  void _startSensorUpdates() {
+    // Start periodic updates
+    _sensorUpdateTimer = Timer.periodic(
+      Duration(seconds: SENSOR_UPDATE_INTERVAL_SECONDS),
+      (_) => _fetchSensorData(),
+    );
+    // Fetch immediately
+    _fetchSensorData();
+  }
+
   Future<void> _fetchUserData() async {
-    User? user = _auth.currentUser;
-    if (user == null) return;
-
     try {
-      DocumentSnapshot doc = await _firestore.collection('users').doc(user.uid).get();
-      
-      if (doc.exists) {
-        Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
-        
-        setState(() {
-          if (data['displayName'] != null && data['displayName'].toString().isNotEmpty) {
-            _userName = data['displayName'];
-          } else if (data['firstName'] != null) {
-            _userName = "${data['firstName']} ${data['lastName'] ?? ''}";
-          } else {
-            _userName = "User";
-          }
+      setState(() => _isLoadingUser = true);
 
-          _userEmail = data['email'] ?? user.email ?? "No Email";
-          _userProfileUrl = data['photoUrl'];
-          
-          if (data['createdAt'] != null) {
-             DateTime date = (data['createdAt'] as Timestamp).toDate();
-             _memberSince = "${_getMonthName(date.month)} ${date.year}";
-          } else {
-             _memberSince = "Recently";
+      User? currentUser = _auth.currentUser;
+      if (currentUser == null) {
+        if (mounted) {
+          setState(() {
+            _userName = "Guest";
+            _userEmail = "Not logged in";
+            _deviceId = "N/A";
+            _memberSince = "N/A";
+            _isLoadingUser = false;
+          });
+        }
+        return;
+      }
+
+      DocumentSnapshot userDoc = await _firestore
+          .collection('users')
+          .doc(currentUser.uid)
+          .get();
+
+      if (userDoc.exists) {
+        Map<String, dynamic> userData = userDoc.data() as Map<String, dynamic>;
+
+        _currentDeviceConnected = userData['currentDeviceConnected'] as String?;
+        
+        if (_currentDeviceConnected == null || _currentDeviceConnected!.isEmpty) {
+          if (userData.containsKey('devices') && userData['devices'] is List) {
+            List devices = userData['devices'] as List;
+            if (devices.isNotEmpty) {
+              _currentDeviceConnected = devices[0].toString();
+            }
           }
-        });
+        }
+
+        String? displayName = userData['displayName'];
+        String? firstName = userData['firstName'];
+        String? lastName = userData['lastName'];
+        String? contactNumber = userData['contactNumber'];
+        String email = userData['email'] ?? currentUser.email ?? 'No email';
+        String? photoUrl = userData['photoUrl'];
+        Timestamp? createdAt = userData['createdAt'];
+
+        bool isNameMissing = (firstName == null || firstName.isEmpty) && (lastName == null || lastName.isEmpty);
+        bool isPhoneMissing = contactNumber == null || contactNumber.isEmpty;
+        bool profileIncomplete = isNameMissing || isPhoneMissing;
+
+        String finalDisplayName;
+        if (displayName != null && displayName.isNotEmpty) {
+          finalDisplayName = displayName;
+        } else if (firstName != null && lastName != null) {
+          finalDisplayName = '$firstName $lastName';
+        } else if (firstName != null) {
+          finalDisplayName = firstName;
+        } else {
+          finalDisplayName = 'User';
+        }
+
+        String memberSince = "N/A";
+        if (createdAt != null) {
+          DateTime date = createdAt.toDate();
+          memberSince = "${_getMonthName(date.month)} ${date.year}";
+        }
+
+        String deviceId = "LD-${currentUser.uid.substring(0, 8).toUpperCase()}";
+
+        if (mounted) {
+          setState(() {
+            _userName = finalDisplayName;
+            _userEmail = email;
+            _deviceId = deviceId;
+            _memberSince = memberSince;
+            _userProfileUrl = photoUrl;
+            _isLoadingUser = false;
+            _isProfileIncomplete = profileIncomplete; 
+          });
+        }
+      } else {
+        if (mounted) {
+          setState(() {
+            _userName = currentUser.displayName ?? 'User';
+            _userEmail = currentUser.email ?? 'No email';
+            _deviceId = "LD-${currentUser.uid.substring(0, 8).toUpperCase()}";
+            _memberSince = "Recently";
+            _userProfileUrl = currentUser.photoURL;
+            _isLoadingUser = false;
+            _isProfileIncomplete = true; 
+          });
+        }
       }
     } catch (e) {
-      debugPrint("Error fetching user: $e");
+      if (mounted) {
+        setState(() {
+          _userName = "Error loading data";
+          _userEmail = "Please try again";
+          _deviceId = "N/A";
+          _memberSince = "N/A";
+          _isLoadingUser = false;
+        });
+      }
     }
   }
 
   String _getMonthName(int month) {
-    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const months = [
+      'January', 'February', 'March', 'April', 'May', 'June',
+      'July', 'August', 'September', 'October', 'November', 'December'
+    ];
     return months[month - 1];
   }
 
-  // --- FAKE: DYNAMIC WEATHER SIMULATION LOGIC ---
-  void _startSimulation() {
-    // Initial update
-    _updateSimulatedData();
-    
-    _simulationTimer = Timer.periodic(
-      const Duration(seconds: SENSOR_UPDATE_INTERVAL_SECONDS),
-      (_) => _updateSimulatedData(),
-    );
-  }
-
-  void _updateSimulatedData() {
-    if (!mounted) return;
-    setState(() {
-      DateTime now = DateTime.now();
-
-      // 1. Randomly pick a weather condition
-      // 0-3: Sunny/Cloudy (Likely), 4-5: Rain (Less Likely), 6: Storm (Rare)
-      int weatherRoll = _random.nextInt(10); 
-      
-      // Target values based on weather
-      double targetTemp, targetHum, targetLight, targetRain;
-
-      if (weatherRoll < 4) { 
-        // SUNNY / CLEAR
-        _weatherCondition = "Sunny";
-        _weatherDescription = "Clear skies, perfect for drying";
-        _weatherIcon = Icons.wb_sunny;
-        _weatherGradient = [const Color(0xFF2962FF), const Color(0xFF448AFF)]; // Blue
-        
-        targetTemp = 30.0 + _random.nextDouble() * 3; // Hot (30-33)
-        targetHum = 50.0 + _random.nextDouble() * 10; // Dry (50-60%)
-        targetLight = 3000.0 + _random.nextDouble() * 1000; // Bright
-        targetRain = 4095; // Dry Sensor
-        _rainConfidence = 5.0 + _random.nextDouble() * 5; // Low chance
-
-      } else if (weatherRoll < 7) {
-        // CLOUDY / OVERCAST
-        _weatherCondition = "Cloudy";
-        _weatherDescription = "Overcast, moderate drying";
-        _weatherIcon = Icons.cloud;
-        _weatherGradient = [const Color(0xFF78909C), const Color(0xFF90A4AE)]; // Grey-Blue
-        
-        targetTemp = 27.0 + _random.nextDouble() * 2; // Mild (27-29)
-        targetHum = 70.0 + _random.nextDouble() * 10; // Humid (70-80%)
-        targetLight = 800.0 + _random.nextDouble() * 400; // Dimmer
-        targetRain = 4095; // Dry Sensor
-        _rainConfidence = 40.0 + _random.nextDouble() * 20; // Medium chance
-
-      } else if (weatherRoll < 9) {
-        // RAINY
-        _weatherCondition = "Rainy";
-        _weatherDescription = "Light rain, rod retracted";
-        _weatherIcon = Icons.grain;
-        _weatherGradient = [const Color(0xFF455A64), const Color(0xFF607D8B)]; // Dark Grey
-        
-        targetTemp = 24.0 + _random.nextDouble() * 2; // Cool (24-26)
-        targetHum = 90.0 + _random.nextDouble() * 5; // Very Humid (90-95%)
-        targetLight = 300.0 + _random.nextDouble() * 200; // Dark
-        targetRain = 1500; // Wet Sensor (< 2000)
-        _rainConfidence = 85.0 + _random.nextDouble() * 10; // High chance
-
-      } else {
-        // THUNDERSTORM
-        _weatherCondition = "Storm";
-        _weatherDescription = "Heavy rain & wind alert";
-        _weatherIcon = Icons.thunderstorm;
-        _weatherGradient = [const Color(0xFF263238), const Color(0xFF37474F)]; // Very Dark
-        
-        targetTemp = 22.0 + _random.nextDouble() * 2; // Cold
-        targetHum = 98.0; // Max Humidity
-        targetLight = 100.0; // Very Dark
-        targetRain = 500; // Very Wet (< 1000)
-        _rainConfidence = 100.0; // Certain
-      }
-
-      // 2. Smoothly transition values (Mock inertia)
-      // Instead of jumping instantly, move 20% towards the target
-      _sensorTemperature += (targetTemp - _sensorTemperature) * 0.2;
-      _sensorHumidity += (targetHum - _sensorHumidity) * 0.2;
-      _sensorLight += (targetLight - _sensorLight) * 0.2;
-      
-      // Rain sensor jumps instantly because rain is sudden
-      _sensorRainIntensity = targetRain;
-
-      // Add noise to make graphs look real
-      _sensorTemperature += (_random.nextDouble() - 0.5) * 0.2;
-      _sensorHumidity += (_random.nextDouble() - 0.5) * 1.0;
-
-      // 3. Update History
-      _addToHistory(_humidityHistory, _sensorHumidity, now);
-      _addToHistory(_tempHistory, _sensorTemperature, now);
-      _addToHistory(_lightHistory, _sensorLight, now);
-      _addToHistory(_rainHistory, _sensorRainIntensity, now);
-      _addToHistory(_rainConfidenceHistory, _rainConfidence, now);
-      _cleanupOldHistory();
-    });
-  }
-
-  void _prefillHistory() {
-    DateTime now = DateTime.now();
-    for (int i = 15; i >= 0; i--) {
-      DateTime time = now.subtract(Duration(minutes: i * 2));
-      _addToHistory(_humidityHistory, 65.0 + sin(i)*5, time);
-      _addToHistory(_tempHistory, 28.0 + cos(i)*2, time);
-      _addToHistory(_lightHistory, 800.0 + _random.nextInt(200), time);
-      _addToHistory(_rainConfidenceHistory, 5.0 + _random.nextDouble() * 5, time);
-      _addToHistory(_rainHistory, 4095, time);
+  Future<void> _fetchSensorData() async {
+    if (_currentDeviceConnected == null || _currentDeviceConnected!.isEmpty) {
+      debugPrint("No device connected for current user");
+      return;
     }
+
+    try {
+      DocumentSnapshot sensorDoc = await _firestore
+          .collection('device_sensors')
+          .doc(_currentDeviceConnected)
+          .get();
+
+      if (sensorDoc.exists) {
+        Map<String, dynamic> sensorData = sensorDoc.data() as Map<String, dynamic>;
+        
+        double humidity = (sensorData['humidity'] ?? 0).toDouble();
+        double temperature = (sensorData['temperature'] ?? 0).toDouble();
+        double light = (sensorData['light'] ?? 0).toDouble();
+        double rainIntensity = (sensorData['rainAO'] ?? 0).toDouble();
+
+        double rainConfidence = _calculateRainfallConfidence(
+          humidity: humidity,
+          temperature: temperature,
+          light: light,
+          rainIntensity: rainIntensity,
+        );
+
+        DateTime now = DateTime.now();
+        
+        if (mounted) {
+          setState(() {
+            _sensorHumidity = humidity;
+            _sensorTemperature = temperature;
+            _sensorLight = light;
+            _sensorRainIntensity = rainIntensity;
+            _rainConfidence = rainConfidence;
+
+            _addToHistory(_humidityHistory, humidity, now);
+            _addToHistory(_tempHistory, temperature, now);
+            _addToHistory(_lightHistory, light, now);
+            _addToHistory(_rainHistory, rainIntensity, now);
+            _addToHistory(_rainConfidenceHistory, rainConfidence, now);
+            
+            _cleanupOldHistory();
+          });
+        }
+      }
+    } catch (e) {
+      debugPrint('Error fetching sensor data: $e');
+    }
+  }
+
+  double _calculateRainfallConfidence({
+    required double humidity,
+    required double temperature,
+    required double light,
+    required double rainIntensity,
+  }) {
+    const double humidityWeight = 0.35;      
+    const double temperatureWeight = 0.35;   
+    const double lightWeight = 0.20;         
+    const double rainIntensityWeight = 0.10; 
+
+    double humidityScore = ((humidity - 60) / 40).clamp(0, 1) * 100;
+    double tempScore = (1 - ((temperature - 15) / 10).clamp(0, 1)) * 100;
+    double lightScore = (1 - (light / 4000).clamp(0, 1)) * 100;
+    double rainScore = ((4095 - rainIntensity) / 4095) * 100;
+
+    double confidence = (
+      (humidityScore * humidityWeight) +
+      (tempScore * temperatureWeight) +
+      (lightScore * lightWeight) +
+      (rainScore * rainIntensityWeight)
+    );
+
+    return confidence.clamp(0, 100);
   }
 
   void _addToHistory(List<SensorDataPoint> history, double value, DateTime timestamp) {
@@ -298,21 +352,64 @@ class _DashboardContentState extends State<DashboardContent> {
   }
 
   void _cleanupOldHistory() {
-    if (_humidityHistory.length > 20) _humidityHistory.removeAt(0);
-    if (_tempHistory.length > 20) _tempHistory.removeAt(0);
-    if (_lightHistory.length > 20) _lightHistory.removeAt(0);
-    if (_rainConfidenceHistory.length > 20) _rainConfidenceHistory.removeAt(0);
-    if (_rainHistory.length > 20) _rainHistory.removeAt(0);
+    DateTime cutoff = DateTime.now().subtract(Duration(minutes: HISTORY_DURATION_MINUTES));
+    
+    _humidityHistory.removeWhere((point) => point.timestamp.isBefore(cutoff));
+    _tempHistory.removeWhere((point) => point.timestamp.isBefore(cutoff));
+    _lightHistory.removeWhere((point) => point.timestamp.isBefore(cutoff));
+    _rainHistory.removeWhere((point) => point.timestamp.isBefore(cutoff));
+    _rainConfidenceHistory.removeWhere((point) => point.timestamp.isBefore(cutoff));
   }
 
-  // --- HELPER: Initials ---
-  String _getInitials(String name) {
-    if (name.isEmpty || name == "Loading...") return "";
-    List<String> nameParts = name.trim().split(RegExp(r'\s+'));
-    if (nameParts.isEmpty) return "U";
-    String first = nameParts[0].isNotEmpty ? nameParts[0][0] : "";
-    String last = nameParts.length > 1 && nameParts[1].isNotEmpty ? nameParts[1][0] : "";
-    return (first + last).toUpperCase();
+  Future<Map<String, dynamic>> _fetchWeather() async {
+    try {
+      final locationResponse = await http.get(Uri.parse('http://ip-api.com/json'));
+      double lat = 14.65;
+      double long = 120.98;
+
+      if (locationResponse.statusCode == 200) {
+        final locData = json.decode(locationResponse.body);
+        lat = locData['lat'];
+        long = locData['lon'];
+        if (mounted) setState(() => _currentCity = locData['city'] ?? "Unknown City");
+      }
+
+      final String url = 'https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$long&current_weather=true';
+      final weatherResponse = await http.get(Uri.parse(url));
+
+      if (weatherResponse.statusCode == 200) {
+        final data = json.decode(weatherResponse.body);
+        final currentWeather = data['current_weather'];
+        final int code = currentWeather['weathercode'];
+        final weatherInfo = _getWeatherInfoFromCode(code);
+
+        if (mounted) {
+          setState(() {
+            _weatherHistory.add(currentWeather['temperature']);
+            if (_weatherHistory.length > 6) _weatherHistory.removeAt(0);
+          });
+        }
+
+        return {
+          "temp": "${currentWeather['temperature'].round()}°",
+          "condition": weatherInfo['condition'],
+          "description": weatherInfo['description'],
+          "icon": weatherInfo['icon'],
+        };
+      } else {
+        throw Exception('Failed');
+      }
+    } catch (e) {
+      return {"temp": "--", "condition": "Offline", "description": "Check internet", "icon": Icons.wifi_off};
+    }
+  }
+
+  Map<String, dynamic> _getWeatherInfoFromCode(int code) {
+    if (code == 0) return {"condition": "Clear", "description": "Sunny skies", "icon": Icons.wb_sunny};
+    if (code >= 1 && code <= 3) return {"condition": "Cloudy", "description": "Partly cloudy", "icon": Icons.cloud};
+    if (code >= 51 && code <= 67) return {"condition": "Rainy", "description": "Rain detected", "icon": Icons.water_drop};
+    if (code >= 95) return {"condition": "Storm", "description": "Thunderstorms", "icon": Icons.thunderstorm};
+    return {"condition": "Rainy", "description": "Showers", "icon": Icons.grain};
   }
 
   void _showAccountModal() {
@@ -346,96 +443,118 @@ class _DashboardContentState extends State<DashboardContent> {
               ),
               const Divider(),
               Expanded(
-                child: SingleChildScrollView(
-                  padding: const EdgeInsets.all(24),
-                  child: Column(
-                    children: [
-                      Stack(
-                        alignment: Alignment.bottomRight,
-                        children: [
-                          CircleAvatar(
-                            radius: 50,
-                            backgroundColor: const Color(0xFF2962FF), 
-                            backgroundImage: _userProfileUrl != null ? NetworkImage(_userProfileUrl!) : null,
-                            child: _userProfileUrl == null 
-                              ? Text(_getInitials(_userName), style: const TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: Colors.white))
-                              : null,
-                          ),
-                          Container(
-                            padding: const EdgeInsets.all(6),
-                            decoration: const BoxDecoration(
-                              color: Colors.white,
-                              shape: BoxShape.circle,
-                              boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 4)],
-                            ),
-                            child: const Icon(Icons.edit, size: 16, color: Colors.grey),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 16),
-                      Text(_userName, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
-                      const SizedBox(height: 4),
-                      Text(_userEmail, style: TextStyle(fontSize: 14, color: Colors.grey[600])),
-                      const SizedBox(height: 32),
-                      
-                      Container(
-                        padding: const EdgeInsets.all(20),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFF8F9FB),
-                          borderRadius: BorderRadius.circular(20),
-                        ),
+                child: _isLoadingUser
+                    ? const Center(child: CircularProgressIndicator())
+                    : SingleChildScrollView(
+                        padding: const EdgeInsets.all(24),
                         child: Column(
                           children: [
-                            _buildInfoRow(Icons.email_outlined, "EMAIL", _userEmail),
-                            const Divider(height: 30),
-                            _buildInfoRow(Icons.phone_android, "USER ID", _deviceId),
-                            const Divider(height: 30),
-                            _buildInfoRow(Icons.calendar_today_outlined, "MEMBER SINCE", _memberSince),
+                            Stack(
+                              alignment: Alignment.bottomRight,
+                              children: [
+                                CircleAvatar(
+                                  radius: 50,
+                                  backgroundColor: Color(0xFF2962FF),
+                                  backgroundImage: _userProfileUrl != null 
+                                      ? NetworkImage(_userProfileUrl!) 
+                                      : null,
+                                  child: _userProfileUrl == null 
+                                      ? Text(
+                                          _getInitials(_userName),
+                                          style: const TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: Color.fromARGB(255, 255, 255, 255)),
+                                        )
+                                      : null,
+                                ),
+                                Container(
+                                  padding: const EdgeInsets.all(6),
+                                  decoration: const BoxDecoration(
+                                    color: Colors.white,
+                                    shape: BoxShape.circle,
+                                    boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 4)],
+                                  ),
+                                  child: const Icon(Icons.edit, size: 16, color: Colors.grey),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 16),
+                            
+                            Text(_userName, 
+                                style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
+                            const SizedBox(height: 4),
+                            Text(_userEmail, 
+                                style: TextStyle(fontSize: 14, color: Colors.grey[600])),
+                            
+                            const SizedBox(height: 32),
+
+                            Align(
+                              alignment: Alignment.centerLeft,
+                              child: Text("Account Information", 
+                                style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.grey[800])),
+                            ),
+                            const SizedBox(height: 12),
+                            
+                            Container(
+                              padding: const EdgeInsets.all(20),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFF8F9FB),
+                                borderRadius: BorderRadius.circular(20),
+                              ),
+                              child: Column(
+                                children: [
+                                  _buildInfoRow(Icons.email_outlined, "EMAIL", _userEmail),
+                                  const Divider(height: 30),
+                                  _buildInfoRow(Icons.phone_android, "USER ID", _deviceId),
+                                  const Divider(height: 30),
+                                  _buildInfoRow(Icons.calendar_today_outlined, "MEMBER SINCE", _memberSince),
+                                ],
+                              ),
+                            ),
+
+                            const SizedBox(height: 32),
+
+                            SizedBox(
+                              width: double.infinity,
+                              height: 50,
+                              child: ElevatedButton(
+                                onPressed: () { 
+                                  Navigator.pop(context); 
+                                  Navigator.push(
+                                    context, 
+                                    MaterialPageRoute(builder: (context) => const EditProfileScreen())
+                                  ).then((_) => _fetchUserData()); 
+                                },
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: const Color(0xFF2962FF),
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                ),
+                                child: const Text("EDIT PROFILE", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                              ),
+                            ),
+                            
+                            const SizedBox(height: 12),
+                            
+                            SizedBox(
+                              width: double.infinity,
+                              height: 50,
+                              child: OutlinedButton.icon(
+                                onPressed: () async {
+                                  await _auth.signOut();
+                                  if (mounted) {
+                                    Navigator.pop(context);
+                                  }
+                                }, 
+                                icon: const Icon(Icons.logout, size: 20, color: Colors.black87),
+                                label: const Text("SIGN OUT", style: TextStyle(color: Colors.black87, fontWeight: FontWeight.bold)),
+                                style: OutlinedButton.styleFrom(
+                                  side: BorderSide(color: Colors.grey.shade300),
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                  backgroundColor: const Color(0xFFF5F6FA),
+                                ),
+                              ),
+                            ),
                           ],
                         ),
                       ),
-                      const SizedBox(height: 32),
-                      SizedBox(
-                        width: double.infinity,
-                        height: 50,
-                        child: ElevatedButton(
-                          onPressed: () { 
-                            Navigator.pop(context); // Close Modal
-                            Navigator.push(
-                              context, 
-                              MaterialPageRoute(builder: (context) => const EditProfileScreen())
-                            ).then((_) {
-                              _fetchUserData(); 
-                            });
-                          },
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF2962FF),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                          ),
-                          child: const Text("EDIT PROFILE", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      SizedBox(
-                        width: double.infinity,
-                        height: 50,
-                        child: OutlinedButton.icon(
-                          onPressed: () async {
-                            await _auth.signOut();
-                            if (mounted) Navigator.pop(context);
-                          }, 
-                          icon: const Icon(Icons.logout, size: 20, color: Colors.black87),
-                          label: const Text("SIGN OUT", style: TextStyle(color: Colors.black87, fontWeight: FontWeight.bold)),
-                          style: OutlinedButton.styleFrom(
-                            side: BorderSide(color: Colors.grey.shade300),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                            backgroundColor: const Color(0xFFF5F6FA),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
               ),
             ],
           ),
@@ -459,7 +578,11 @@ class _DashboardContentState extends State<DashboardContent> {
             children: [
               Text(label, style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.grey)),
               const SizedBox(height: 2),
-              Text(value, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Color(0xFF1E2339)), overflow: TextOverflow.ellipsis),
+              Text(
+                value, 
+                style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Color(0xFF1E2339)),
+                overflow: TextOverflow.ellipsis,
+              ),
             ],
           ),
         )
@@ -507,16 +630,20 @@ class _DashboardContentState extends State<DashboardContent> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            const Text("Recent History (Simulated)", style: TextStyle(color: Colors.grey, fontSize: 14)),
+                            const Text("Recent History (Last 30 min)", style: TextStyle(color: Colors.grey, fontSize: 14)),
                             const SizedBox(height: 20),
-                            SizedBox(height: 150, width: double.infinity, child: CustomPaint(painter: TimeSeriesChartPainter(data: historyData, color: const Color(0xFF2962FF)))),
+                            historyData.isEmpty
+                                ? SizedBox(height: 100, width: double.infinity, child: Center(child: Text("Waiting for sensor data...", style: TextStyle(color: Colors.grey.shade400, fontStyle: FontStyle.italic))))
+                                : SizedBox(height: 150, width: double.infinity, child: CustomPaint(painter: TimeSeriesChartPainter(data: historyData, color: const Color(0xFF2962FF)))),
                           ],
                         ),
                       ),
                       const SizedBox(height: 24),
                       const Text("Status", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
                       const SizedBox(height: 8),
-                      Text(statusMsg, style: const TextStyle(fontSize: 14, color: Color(0xFF5A6175), height: 1.5)),
+                      Text(
+                          value == "0.0" || value == "0" || _currentDeviceConnected == null ? "Connect your Smart Rack sensors to see real-time status." : statusMsg,
+                          style: const TextStyle(fontSize: 14, color: Color(0xFF5A6175), height: 1.5)),
                     ],
                   ),
                 ),
@@ -530,14 +657,19 @@ class _DashboardContentState extends State<DashboardContent> {
 
   @override
   Widget build(BuildContext context) {
-    final double padding = MediaQuery.of(context).size.width * 0.05;
+    final size = MediaQuery.of(context).size;
+    final double padding = size.width * 0.05;
 
-    // Helper for Rain Text
+    // --- Updated Logic: Dry = "No Rain", Wet = Status ---
     String getRainStatus() {
-      if (_sensorRainIntensity > 3500) return "Dry";
-      if (_sensorRainIntensity > 2000) return "Moist";
-      return "Wet"; 
+      if (_sensorRainIntensity > 3500) return "No Rain";
+      if (_sensorRainIntensity > 2000) return "Drizzle";
+      if (_sensorRainIntensity > 1000) return "Rain";
+      return "Heavy Rain";
     }
+
+    // --- Updated Logic: Is it raining? ---
+    bool isRaining = _sensorRainIntensity <= 3500;
 
     return SafeArea(
       child: SingleChildScrollView(
@@ -553,64 +685,122 @@ class _DashboardContentState extends State<DashboardContent> {
                   children: [
                     Text("My Laundry", style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
                     SizedBox(height: 4),
-                    Text("System Dashboard", style: TextStyle(fontSize: 14, color: Color(0xFF5A6175), fontWeight: FontWeight.w500)),
+                    Text("System Active • Auto Mode", style: TextStyle(fontSize: 14, color: Color(0xFF5A6175), fontWeight: FontWeight.w500)),
                   ],
                 ),
                 GestureDetector(
                   onTap: _showAccountModal, 
                   child: CircleAvatar(
                     radius: 24,
-                    backgroundColor: const Color(0xFF2962FF), 
+                    backgroundColor: Color(0xFF2962FF),
                     backgroundImage: _userProfileUrl != null ? NetworkImage(_userProfileUrl!) : null,
+                    // Top Right Corner Initials Logic
                     child: _userProfileUrl == null 
-                      ? Text(_getInitials(_userName), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold))
-                      : null,
+                        ? Text(_getInitials(_userName), style: const TextStyle(fontWeight: FontWeight.bold, color: Color.fromARGB(255, 255, 255, 255))) 
+                        : null,
                   ),
                 ),
               ],
             ),
-            const SizedBox(height: 24),
+            const SizedBox(height: 16),
 
-            // --- STATIC WEATHER CARD (Now Dynamic) ---
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(24),
-              decoration: BoxDecoration(
-                // Dynamic Gradient based on weather
-                gradient: LinearGradient(colors: _weatherGradient, begin: Alignment.topLeft, end: Alignment.bottomRight),
-                borderRadius: BorderRadius.circular(24),
-                boxShadow: [BoxShadow(color: _weatherGradient.last.withOpacity(0.3), blurRadius: 20, offset: const Offset(0, 10))],
-              ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                          decoration: BoxDecoration(color: Colors.white.withOpacity(0.2), borderRadius: BorderRadius.circular(20)),
-                          child: const Row(mainAxisSize: MainAxisSize.min, children: [Icon(Icons.location_on, color: Colors.white, size: 12), SizedBox(width: 4), Text("Quezon City", style: TextStyle(color: Colors.white, fontSize: 12))]),
+            // --- Incomplete Profile Notice ---
+            if (_isProfileIncomplete && !_isLoadingUser)
+              GestureDetector(
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (context) => const EditProfileScreen()),
+                  ).then((_) => _fetchUserData());
+                },
+                child: Container(
+                  margin: const EdgeInsets.only(bottom: 24),
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  decoration: BoxDecoration(
+                    color: Colors.orange.shade50,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.orange.shade200),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(Icons.info_outline, color: Colors.orange.shade800),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              "Complete your profile",
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: Colors.orange.shade900,
+                              ),
+                            ),
+                            Text(
+                              "Add your name and contact info.",
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Colors.orange.shade800,
+                              ),
+                            ),
+                          ],
                         ),
-                        const SizedBox(height: 12),
-                        Text(_weatherCondition, style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold)),
-                        const SizedBox(height: 6),
-                        Text(_weatherDescription, style: TextStyle(color: Colors.white.withOpacity(0.9), fontSize: 13, height: 1.4)),
-                        const SizedBox(height: 10),
-                        // Current Sim Temp
-                        Text("${_sensorTemperature.toStringAsFixed(0)}°", style: const TextStyle(color: Colors.white, fontSize: 32, fontWeight: FontWeight.bold)),
+                      ),
+                      Icon(Icons.arrow_forward_ios, size: 16, color: Colors.orange.shade800),
+                    ],
+                  ),
+                ),
+              )
+            else
+              const SizedBox(height: 24),
+
+            // Weather Card
+            FutureBuilder<Map<String, dynamic>>(
+              future: _fetchWeather(),
+              builder: (context, snapshot) {
+                final data = snapshot.data ?? {"temp": "--", "condition": "Loading...", "description": "...", "icon": Icons.wb_sunny};
+                return GestureDetector(
+                  onTap: () => _showDetailModal("Weather", data['temp'], [], "Current weather is optimal."),
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(24),
+                    decoration: BoxDecoration(
+                      gradient: const LinearGradient(colors: [Color(0xFF2962FF), Color(0xFF448AFF)], begin: Alignment.topLeft, end: Alignment.bottomRight),
+                      borderRadius: BorderRadius.circular(24),
+                      boxShadow: [BoxShadow(color: Colors.blue.withOpacity(0.3), blurRadius: 20, offset: const Offset(0, 10))],
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                decoration: BoxDecoration(color: Colors.white.withOpacity(0.2), borderRadius: BorderRadius.circular(20)),
+                                child: Row(mainAxisSize: MainAxisSize.min, children: [const Icon(Icons.location_on, color: Colors.white, size: 12), const SizedBox(width: 4), Text(_currentCity, style: const TextStyle(color: Colors.white, fontSize: 12))]),
+                              ),
+                              const SizedBox(height: 12),
+                              Text(data['condition'], style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold)),
+                              const SizedBox(height: 6),
+                              Text(data['description'], style: TextStyle(color: Colors.white.withOpacity(0.9), fontSize: 13, height: 1.4)),
+                              const SizedBox(height: 10),
+                              Text(data['temp'], style: const TextStyle(color: Colors.white, fontSize: 32, fontWeight: FontWeight.bold)),
+                            ],
+                          ),
+                        ),
+                        Icon(data['icon'], size: 60, color: Colors.yellowAccent),
                       ],
                     ),
                   ),
-                  Icon(_weatherIcon, size: 60, color: Colors.yellowAccent),
-                ],
-              ),
+                );
+              },
             ),
 
             const SizedBox(height: 24),
 
-            // --- SENSOR CARDS ---
+            // Sensor Cards Grid
             GridView.count(
               crossAxisCount: 2,
               shrinkWrap: true,
@@ -625,7 +815,7 @@ class _DashboardContentState extends State<DashboardContent> {
                   icon: Icons.water_drop_outlined, 
                   color: Colors.green, 
                   bgColor: const Color(0xFFE8F5E9), 
-                  onTap: () => _showDetailModal("Humidity", "${_sensorHumidity.toStringAsFixed(1)}%", _humidityHistory, "Humidity is fluctuating based on weather.")
+                  onTap: () => _showDetailModal("Humidity", "${_sensorHumidity.toStringAsFixed(1)}%", _humidityHistory, "Humidity is optimal for drying.")
                 ),
                 _buildSensorCard(
                   title: "Temperature", 
@@ -633,22 +823,23 @@ class _DashboardContentState extends State<DashboardContent> {
                   icon: Icons.thermostat, 
                   color: Colors.blue, 
                   bgColor: const Color(0xFFE3F2FD), 
-                  onTap: () => _showDetailModal("Temperature", "${_sensorTemperature.toStringAsFixed(1)}°C", _tempHistory, "Temperature adapts to simulated weather.")
+                  onTap: () => _showDetailModal("Temperature", "${_sensorTemperature.toStringAsFixed(1)}°C", _tempHistory, "Temperature is good for drying.")
                 ),
+                // --- UPDATED RAIN SENSOR CARD ---
                 _buildSensorCard(
                   title: "Rain Sensor", 
                   value: getRainStatus(), 
-                  subtitle: getRainStatus() == "Dry" ? "Safe" : "Alert", 
+                  subtitle: isRaining ? "Alert" : null, // Show Alert only if raining
                   icon: Icons.cloud_outlined, 
-                  color: getRainStatus() == "Dry" ? Colors.green : Colors.orange, 
-                  bgColor: const Color(0xFFFFF3E0), 
-                  onTap: () => _showDetailModal("Rain Sensor", getRainStatus(), _rainHistory, "Detects rain when weather turns bad.")
+                  color: isRaining ? Colors.orange : Colors.green, 
+                  bgColor: const Color(0xFFE8F5E9), 
+                  onTap: () => _showDetailModal("Rain Sensor", getRainStatus(), _rainHistory, "Current rain intensity: ${_sensorRainIntensity.toStringAsFixed(0)}")
                 ),
                 _buildCircleProgressCard(
                   title: "Rain Chance", 
                   percentage: _rainConfidence.toInt(), 
                   icon: Icons.thunderstorm_outlined, 
-                  onTap: () => _showDetailModal("Rain Chance", "${_rainConfidence.toInt()}%", _rainConfidenceHistory, "Calculated based on current weather.")
+                  onTap: () => _showDetailModal("Rain Chance", "${_rainConfidence.toInt()}%", _rainConfidenceHistory, "Calculated based on humidity, temperature, light, and rain sensor.")
                 ),
                 _buildSensorCard(
                   title: "Ambient Light", 
@@ -656,8 +847,9 @@ class _DashboardContentState extends State<DashboardContent> {
                   icon: Icons.wb_sunny_outlined, 
                   color: Colors.orange, 
                   bgColor: const Color(0xFFFFF3E0), 
-                  onTap: () => _showDetailModal("Ambient Light", "${_sensorLight.toStringAsFixed(0)} lux", _lightHistory, "Varies with cloud cover.")
+                  onTap: () => _showDetailModal("Ambient Light", "${_sensorLight.toStringAsFixed(0)} lux", _lightHistory, "Good sunlight for drying.")
                 ),
+                // --- LOAD WEIGHT REMOVED FROM HERE ---
               ],
             ),
             const SizedBox(height: 80),
@@ -674,6 +866,7 @@ class _DashboardContentState extends State<DashboardContent> {
     required IconData icon, 
     required Color color, 
     required Color bgColor, 
+    bool showChip = false, 
     required VoidCallback onTap
   }) {
     return GestureDetector(
@@ -684,17 +877,35 @@ class _DashboardContentState extends State<DashboardContent> {
           color: Colors.white, 
           borderRadius: BorderRadius.circular(20),
           boxShadow: [
-            BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, 4))
+            BoxShadow(
+              color: Colors.black.withOpacity(0.05),
+              blurRadius: 10,
+              offset: const Offset(0, 4),
+            )
           ],
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Container(
-              padding: const EdgeInsets.all(8), 
-              decoration: BoxDecoration(color: bgColor, shape: BoxShape.circle), 
-              child: Icon(icon, color: color, size: 20)
-            ), 
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween, 
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(8), 
+                  decoration: BoxDecoration(color: bgColor, shape: BoxShape.circle), 
+                  child: Icon(icon, color: color, size: 20)
+                ), 
+                if (showChip) 
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4), 
+                    decoration: BoxDecoration(
+                      color: Colors.blue.withOpacity(0.1), 
+                      borderRadius: BorderRadius.circular(10)
+                    ), 
+                    child: const Text("Drying...", style: TextStyle(fontSize: 10, color: Colors.blue, fontWeight: FontWeight.bold))
+                  )
+              ]
+            ),
             const Spacer(),
             Text(value, style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
             if (subtitle != null && subtitle.isNotEmpty) ...[
@@ -722,7 +933,13 @@ class _DashboardContentState extends State<DashboardContent> {
         decoration: BoxDecoration(
           color: Colors.white, 
           borderRadius: BorderRadius.circular(20),
-          boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, 4))],
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.05),
+              blurRadius: 10,
+              offset: const Offset(0, 4),
+            )
+          ],
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -788,13 +1005,9 @@ class TimeSeriesChartPainter extends CustomPainter {
       ..color = color
       ..style = PaintingStyle.fill;
     
-    // Find min and max values safely
-    double maxVal = data.first.value;
-    double minVal = data.first.value;
-    for (var point in data) {
-      if (point.value > maxVal) maxVal = point.value;
-      if (point.value < minVal) minVal = point.value;
-    }
+    // Find min and max values
+    double maxVal = data.map((e) => e.value).reduce((a, b) => a > b ? a : b);
+    double minVal = data.map((e) => e.value).reduce((a, b) => a < b ? a : b);
     
     if (maxVal == minVal) { 
       maxVal += 1; 
