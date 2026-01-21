@@ -2,8 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'dart:convert'; // Added for API
-import 'package:http/http.dart' as http; // Added for API
+import 'dart:convert';
+import 'package:http/http.dart' as http;
 
 class EditProfileScreen extends StatefulWidget {
   const EditProfileScreen({super.key});
@@ -17,7 +17,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   bool _isLoading = true;
   bool _isSaving = false;
 
-  // --- Track Verification Status ---
   bool _isPhoneVerified = false;
 
   late TextEditingController _displayNameController;
@@ -42,12 +41,10 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     _contactNumberController = TextEditingController();
     _addressController = TextEditingController();
 
-    // LIVE UPDATE LISTENERS
     _displayNameController.addListener(() { if (mounted) setState(() {}); });
     _firstNameController.addListener(() { if (mounted) setState(() {}); });
     _lastNameController.addListener(() { if (mounted) setState(() {}); });
 
-    // --- Reset verification if user changes the number ---
     _contactNumberController.addListener(() {
       if (_isPhoneVerified && mounted) {
         setState(() {
@@ -69,11 +66,9 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     super.dispose();
   }
 
-  // --- ADDRESS API FUNCTION (Using Photon) ---
   Future<List<String>> _fetchAddressSuggestions(String query) async {
     if (query.isEmpty) return [];
 
-    // Photon API Endpoint
     final url = Uri.parse('https://photon.komoot.io/api/?q=$query&limit=5');
 
     try {
@@ -98,7 +93,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     return [];
   }
 
-  // --- PHONE VERIFICATION FUNCTION ---
   void _verifyPhoneNumber() {
     String number = _contactNumberController.text.trim();
     if (number.length != 10 || !number.startsWith('9')) {
@@ -106,7 +100,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       return;
     }
 
-    // SIMULATED OTP DIALOG
     TextEditingController otpController = TextEditingController();
     showDialog(
       context: context,
@@ -154,7 +147,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     );
   }
 
-  // --- AVATAR INITIALS HELPER ---
   String _getInitials() {
     String display = _displayNameController.text.trim();
     if (display.isNotEmpty) {
@@ -205,7 +197,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
           _photoUrl = data['photoUrl'];
           _signInProvider = data['signInProvider'];
 
-          // --- Load Verification Status ---
           _isPhoneVerified = data['isPhoneVerified'] ?? false;
 
           final passwordField = data['password'];
@@ -255,7 +246,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       updates['address'] = _addressController.text.trim();
       updates['updatedAt'] = FieldValue.serverTimestamp();
       
-      // --- Save Verification Status ---
       updates['isPhoneVerified'] = _isPhoneVerified;
 
       await _firestore.collection('users').doc(user.uid).update(updates);
@@ -273,7 +263,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     }
   }
 
-  // --- Password & Account Logic (Untouched) ---
   void _changePassword() {
     showDialog(context: context, builder: (context) => _PasswordDialog(
         hasPassword: _hasPassword,
@@ -369,7 +358,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                 const Text("Manage Account", style: TextStyle(fontSize: 14, color: Colors.grey)),
                 const SizedBox(height: 30),
 
-                // --- AVATAR ---
                 Center(
                   child: Container(
                     width: 100, height: 100,
@@ -383,7 +371,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                 const Text("Personal Information", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                 const SizedBox(height: 20),
 
-                // --- 1. DISPLAY NAME ---
                 _buildTextField(
                   "DISPLAY NAME",
                   _displayNameController,
@@ -396,7 +383,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                 ),
                 const SizedBox(height: 16),
 
-                // --- 2. FIRST & LAST NAME ---
                 Row(
                   children: [
                     Expanded(
@@ -432,7 +418,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                 ),
                 const SizedBox(height: 16),
 
-                // --- 3. PHONE NUMBER (WITH VERIFY & NOTICE) ---
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -471,14 +456,13 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                             },
                           ),
                         ),
-                        // --- VERIFY BUTTON / CHECKMARK ---
                         const SizedBox(width: 10),
                         Container(
                           height: 55,
                           alignment: Alignment.center,
                           child: _isPhoneVerified
-                            ? const Icon(Icons.check_circle, color: Colors.green, size: 30) // Verified
-                            : TextButton( // Not Verified
+                            ? const Icon(Icons.check_circle, color: Colors.green, size: 30)
+                            : TextButton(
                                 onPressed: _verifyPhoneNumber,
                                 style: TextButton.styleFrom(
                                   backgroundColor: const Color(0xFFE3F2FD),
@@ -491,7 +475,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                       ],
                     ),
                     
-                    // --- NEW: WARNING NOTICE IF NOT VERIFIED ---
                     if (!_isPhoneVerified) ...[
                       const SizedBox(height: 8),
                       Row(
@@ -512,7 +495,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
 
                 const SizedBox(height: 16),
 
-                // --- 4. ADDRESS (NOW WITH AUTOCOMPLETE API) ---
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -562,7 +544,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                             elevation: 4.0,
                             borderRadius: BorderRadius.circular(12),
                             child: Container(
-                              width: MediaQuery.of(context).size.width - 48, // Match form width
+                              width: MediaQuery.of(context).size.width - 48,
                               decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12)),
                               constraints: const BoxConstraints(maxHeight: 250),
                               child: ListView.separated(
@@ -617,7 +599,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     );
   }
 
-  // --- UPDATED HELPER WIDGET ---
   Widget _buildTextField(
     String label,
     TextEditingController controller,
@@ -650,6 +631,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   }
 }
 
+// ========== PASSWORD DIALOG WITH ENHANCED VALIDATION ==========
 class _PasswordDialog extends StatefulWidget {
   final bool hasPassword;
   final String? signInProvider;
@@ -657,7 +639,13 @@ class _PasswordDialog extends StatefulWidget {
   final Future<void> Function(String) onPasswordSet;
   final void Function(String, Color) showSnackBar;
 
-  const _PasswordDialog({required this.hasPassword, required this.signInProvider, required this.onPasswordChange, required this.onPasswordSet, required this.showSnackBar});
+  const _PasswordDialog({
+    required this.hasPassword,
+    required this.signInProvider,
+    required this.onPasswordChange,
+    required this.onPasswordSet,
+    required this.showSnackBar
+  });
 
   @override
   State<_PasswordDialog> createState() => _PasswordDialogState();
@@ -668,7 +656,94 @@ class _PasswordDialogState extends State<_PasswordDialog> {
   final _currentController = TextEditingController();
   final _newController = TextEditingController();
   final _confirmController = TextEditingController();
-  bool _obsCurrent = true; bool _obsNew = true; bool _obsConfirm = true;
+  
+  bool _obsCurrent = true;
+  bool _obsNew = true;
+  bool _obsConfirm = true;
+
+  // Live validation states
+  bool _hasMinLength = false;
+  bool _hasMaxLength = true;
+  bool _hasUppercase = false;
+  bool _hasDigit = false;
+  bool _hasSpecialChar = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _newController.addListener(_validatePasswordLive);
+  }
+
+  @override
+  void dispose() {
+    _currentController.dispose();
+    _newController.dispose();
+    _confirmController.dispose();
+    super.dispose();
+  }
+
+  void _validatePasswordLive() {
+    final password = _newController.text;
+    setState(() {
+      _hasMinLength = password.length >= 8;
+      _hasMaxLength = password.length <= 50;
+      _hasUppercase = password.contains(RegExp(r'[A-Z]'));
+      _hasDigit = password.contains(RegExp(r'[0-9]'));
+      _hasSpecialChar = password.contains(RegExp(r'[!@#$%^&*(),.?":{}|<>]'));
+    });
+  }
+
+  String? _validatePassword(String? value) {
+    if (value == null || value.isEmpty) {
+      return 'Password is required';
+    }
+    if (value.length < 8) {
+      return 'Minimum 8 characters required';
+    }
+    if (value.length > 50) {
+      return 'Maximum 50 characters allowed';
+    }
+    if (!value.contains(RegExp(r'[A-Z]'))) {
+      return 'Must contain at least 1 uppercase letter';
+    }
+    if (!value.contains(RegExp(r'[0-9]'))) {
+      return 'Must contain at least 1 digit';
+    }
+    if (!value.contains(RegExp(r'[!@#$%^&*(),.?":{}|<>]'))) {
+      return 'Must contain at least 1 special character';
+    }
+    return null;
+  }
+
+  bool get _isPasswordValid {
+    return _hasMinLength && _hasMaxLength && _hasUppercase && _hasDigit && _hasSpecialChar;
+  }
+
+  Widget _buildValidationIndicator(String label, bool isValid) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        children: [
+          Icon(
+            isValid ? Icons.check_circle : Icons.cancel,
+            size: 16,
+            color: isValid ? Colors.green : Colors.red.shade300,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              label,
+              style: TextStyle(
+                fontSize: 12,
+                color: isValid ? Colors.green.shade700 : Colors.grey.shade600,
+                fontWeight: isValid ? FontWeight.w600 : FontWeight.normal,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -679,20 +754,100 @@ class _PasswordDialogState extends State<_PasswordDialog> {
           key: _formKey,
           child: Column(
             mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              // Current Password (only for password change)
               if (widget.hasPassword) ...[
-                TextFormField(controller: _currentController, obscureText: _obsCurrent, decoration: InputDecoration(labelText: "Current Password", suffixIcon: IconButton(icon: Icon(_obsCurrent ? Icons.visibility_off : Icons.visibility), onPressed: () => setState(() => _obsCurrent = !_obsCurrent))), validator: (v) => v!.isEmpty ? "Required" : null),
-                const SizedBox(height: 10),
+                TextFormField(
+                  controller: _currentController,
+                  obscureText: _obsCurrent,
+                  decoration: InputDecoration(
+                    labelText: "Current Password",
+                    border: const OutlineInputBorder(),
+                    suffixIcon: IconButton(
+                      icon: Icon(_obsCurrent ? Icons.visibility_off : Icons.visibility),
+                      onPressed: () => setState(() => _obsCurrent = !_obsCurrent),
+                    ),
+                  ),
+                  validator: (v) => v == null || v.isEmpty ? "Required" : null,
+                ),
+                const SizedBox(height: 16),
               ],
-              TextFormField(controller: _newController, obscureText: _obsNew, decoration: InputDecoration(labelText: "New Password", suffixIcon: IconButton(icon: Icon(_obsNew ? Icons.visibility_off : Icons.visibility), onPressed: () => setState(() => _obsNew = !_obsNew))), validator: (v) => v!.length < 8 ? "Min 8 chars" : null),
-              const SizedBox(height: 10),
-              TextFormField(controller: _confirmController, obscureText: _obsConfirm, decoration: InputDecoration(labelText: "Confirm Password", suffixIcon: IconButton(icon: Icon(_obsConfirm ? Icons.visibility_off : Icons.visibility), onPressed: () => setState(() => _obsConfirm = !_obsConfirm))), validator: (v) => v != _newController.text ? "Mismatch" : null),
+
+              // New Password
+              TextFormField(
+                controller: _newController,
+                obscureText: _obsNew,
+                autovalidateMode: AutovalidateMode.onUserInteraction,
+                decoration: InputDecoration(
+                  labelText: "New Password",
+                  border: const OutlineInputBorder(),
+                  suffixIcon: IconButton(
+                    icon: Icon(_obsNew ? Icons.visibility_off : Icons.visibility),
+                    onPressed: () => setState(() => _obsNew = !_obsNew),
+                  ),
+                ),
+                validator: (value) {
+                  final baseValidation = _validatePassword(value);
+                  if (baseValidation != null) return baseValidation;
+                  
+                  // Check if new password equals current password (for change password only)
+                  if (widget.hasPassword && value == _currentController.text) {
+                    return 'New password must be different from current password';
+                  }
+                  
+                  return null;
+                },
+              ),
+              const SizedBox(height: 8),
+              
+              // Password Requirements Label
+              const Text(
+                "Password must contain:",
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.bold,
+                  color: Color(0xFF5A6175),
+                ),
+              ),
+              const SizedBox(height: 6),
+              
+              // Live Validation Indicators
+              _buildValidationIndicator("8-50 characters", _hasMinLength && _hasMaxLength),
+              _buildValidationIndicator("At least 1 uppercase letter (A-Z)", _hasUppercase),
+              _buildValidationIndicator("At least 1 digit (0-9)", _hasDigit),
+              _buildValidationIndicator("At least 1 special character (!@#\$%^&*)", _hasSpecialChar),
+              
+              const SizedBox(height: 16),
+
+              // Confirm Password
+              TextFormField(
+                controller: _confirmController,
+                obscureText: _obsConfirm,
+                autovalidateMode: AutovalidateMode.onUserInteraction,
+                decoration: InputDecoration(
+                  labelText: "Confirm Password",
+                  border: const OutlineInputBorder(),
+                  suffixIcon: IconButton(
+                    icon: Icon(_obsConfirm ? Icons.visibility_off : Icons.visibility),
+                    onPressed: () => setState(() => _obsConfirm = !_obsConfirm),
+                  ),
+                ),
+                validator: (v) {
+                  if (v == null || v.isEmpty) return "Required";
+                  if (v != _newController.text) return "Passwords do not match";
+                  return null;
+                },
+              ),
             ],
           ),
         ),
       ),
       actions: [
-        TextButton(onPressed: () => Navigator.pop(context), child: const Text("CANCEL")),
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text("CANCEL"),
+        ),
         ElevatedButton(
           onPressed: () {
             if (_formKey.currentState!.validate()) {
@@ -704,8 +859,11 @@ class _PasswordDialogState extends State<_PasswordDialog> {
               }
             }
           },
-          child: const Text("SAVE"),
-        )
+          style: ElevatedButton.styleFrom(
+            backgroundColor: const Color(0xFF2962FF),
+          ),
+          child: const Text("SAVE", style: TextStyle(color: Colors.white)),
+        ),
       ],
     );
   }
