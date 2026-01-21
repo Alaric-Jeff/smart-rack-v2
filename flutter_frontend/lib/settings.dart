@@ -474,8 +474,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               child: Column(
                                 children: [
                                   _buildInfoRow(Icons.email_outlined, "EMAIL", _userEmail),
+                                  // --- REMOVED "CONNECTED DEVICE" TO MATCH HOME SCREEN ---
                                   const Divider(height: 30),
-                                  _buildInfoRow(Icons.phone_android, "DEVICE ID", _deviceId),
+                                  _buildInfoRow(Icons.phone_android, "USER ID", _deviceId),
                                   const Divider(height: 30),
                                   _buildInfoRow(Icons.calendar_today_outlined, "MEMBER SINCE", _memberSince),
                                 ],
@@ -577,8 +578,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20), boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.02), blurRadius: 10, offset: const Offset(0, 4))]),
                 child: Column(
                   children: [
-                    // --- REMOVED AUTO-RETRACT BUTTON ---
-                    
                     _buildSwitchTile(
                       title: "Safety Lock", 
                       subtitle: "Prevent manual controls when heavy load detected", 
@@ -633,13 +632,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20), boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.02), blurRadius: 10, offset: const Offset(0, 4))]),
                 child: Column(
                   children: [
-                    // --- NEW: 2FA SWITCH ---
+                    // --- NEW: 2FA SWITCH WITH CONFIRMATION ---
                     _buildSwitchTile(
                       title: "2-Factor Auth",
                       subtitle: "Secure login with OTP",
                       icon: Icons.security_outlined,
                       value: _is2FAEnabled,
-                      onChanged: _toggle2FA, // Calls the new logic
+                      // Wrap in confirmation logic
+                      onChanged: (val) {
+                        _showConfirmation("2-Factor Auth", val, () => _toggle2FA(val));
+                      },
                     ),
                     Divider(height: 1, color: Colors.grey.shade100, indent: 60, endIndent: 20),
 
