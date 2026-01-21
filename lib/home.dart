@@ -149,7 +149,7 @@ class _DashboardContentState extends State<DashboardContent> {
   void _startSensorUpdates() {
     // Start periodic updates
     _sensorUpdateTimer = Timer.periodic(
-      Duration(seconds: SENSOR_UPDATE_INTERVAL_SECONDS),
+      const Duration(seconds: SENSOR_UPDATE_INTERVAL_SECONDS),
       (_) => _fetchSensorData(),
     );
     // Fetch immediately
@@ -352,7 +352,7 @@ class _DashboardContentState extends State<DashboardContent> {
   }
 
   void _cleanupOldHistory() {
-    DateTime cutoff = DateTime.now().subtract(Duration(minutes: HISTORY_DURATION_MINUTES));
+    DateTime cutoff = DateTime.now().subtract(const Duration(minutes: HISTORY_DURATION_MINUTES));
     
     _humidityHistory.removeWhere((point) => point.timestamp.isBefore(cutoff));
     _tempHistory.removeWhere((point) => point.timestamp.isBefore(cutoff));
@@ -454,7 +454,7 @@ class _DashboardContentState extends State<DashboardContent> {
                               children: [
                                 CircleAvatar(
                                   radius: 50,
-                                  backgroundColor: Color(0xFF2962FF),
+                                  backgroundColor: const Color(0xFF2962FF),
                                   backgroundImage: _userProfileUrl != null 
                                       ? NetworkImage(_userProfileUrl!) 
                                       : null,
@@ -692,7 +692,7 @@ class _DashboardContentState extends State<DashboardContent> {
                   onTap: _showAccountModal, 
                   child: CircleAvatar(
                     radius: 24,
-                    backgroundColor: Color(0xFF2962FF),
+                    backgroundColor: const Color(0xFF2962FF),
                     backgroundImage: _userProfileUrl != null ? NetworkImage(_userProfileUrl!) : null,
                     // Top Right Corner Initials Logic
                     child: _userProfileUrl == null 
