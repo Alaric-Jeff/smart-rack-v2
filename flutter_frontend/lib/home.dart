@@ -8,6 +8,7 @@ import 'controls.dart';
 import 'notification.dart';
 import 'settings.dart'; 
 import 'edit_profile.dart';
+import 'device_pairing.dart'; 
 
 // ============================================
 // TOP LEVEL CONFIGURATION
@@ -36,7 +37,8 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFFF8F9FB),
-      body: _pages[_selectedIndex],
+      body: _pages[_selectedIndex > 2 ? _selectedIndex - 1 : _selectedIndex], 
+      
       bottomNavigationBar: Container(
         decoration: BoxDecoration(
           color: Colors.white,
@@ -54,13 +56,46 @@ class _HomeScreenState extends State<HomeScreen> {
           unselectedItemColor: Colors.grey,
           showUnselectedLabels: true,
           currentIndex: _selectedIndex,
-          onTap: (index) => setState(() => _selectedIndex = index),
-          items: const [
-            BottomNavigationBarItem(icon: Icon(Icons.home_filled), label: "HOME"),
-            BottomNavigationBarItem(icon: Icon(Icons.tune), label: "CONTROLS"),
+          
+          onTap: (index) {
+            if (index == 2) {
+              Navigator.push(
+                context, 
+                MaterialPageRoute(builder: (context) => const DevicePairingScreen())
+              );
+            } else {
+              setState(() => _selectedIndex = index);
+            }
+          },
+          
+          items: [
+            const BottomNavigationBarItem(icon: Icon(Icons.home_filled), label: "HOME"),
+            const BottomNavigationBarItem(icon: Icon(Icons.tune), label: "CONTROLS"),
+            
+            // Plus Button
             BottomNavigationBarItem(
+              icon: Container(
+                height: 45,
+                width: 45,
+                decoration: BoxDecoration(
+                  color: const Color(0xFF2962FF), 
+                  shape: BoxShape.circle,
+                  boxShadow: [
+                    BoxShadow(
+                      color: const Color(0xFF2962FF).withOpacity(0.4),
+                      blurRadius: 10,
+                      offset: const Offset(0, 4),
+                    )
+                  ]
+                ),
+                child: const Icon(Icons.add, color: Colors.white, size: 30),
+              ),
+              label: "", 
+            ),
+
+            const BottomNavigationBarItem(
                 icon: Icon(Icons.notifications_outlined), label: "ALERTS"),
-            BottomNavigationBarItem(
+            const BottomNavigationBarItem(
                 icon: Icon(Icons.settings_outlined), label: "SETTINGS"),
           ],
         ),
@@ -149,7 +184,7 @@ class _DashboardContentState extends State<DashboardContent> {
   void _startSensorUpdates() {
     // Start periodic updates
     _sensorUpdateTimer = Timer.periodic(
-      const Duration(seconds: SENSOR_UPDATE_INTERVAL_SECONDS),
+      Duration(seconds: SENSOR_UPDATE_INTERVAL_SECONDS),
       (_) => _fetchSensorData(),
     );
     // Fetch immediately
@@ -352,7 +387,7 @@ class _DashboardContentState extends State<DashboardContent> {
   }
 
   void _cleanupOldHistory() {
-    DateTime cutoff = DateTime.now().subtract(const Duration(minutes: HISTORY_DURATION_MINUTES));
+    DateTime cutoff = DateTime.now().subtract(Duration(minutes: HISTORY_DURATION_MINUTES));
     
     _humidityHistory.removeWhere((point) => point.timestamp.isBefore(cutoff));
     _tempHistory.removeWhere((point) => point.timestamp.isBefore(cutoff));
@@ -660,6 +695,9 @@ class _DashboardContentState extends State<DashboardContent> {
     final size = MediaQuery.of(context).size;
     final double padding = size.width * 0.05;
 
+    // --- CHECK: Is Device Connected? ---
+    bool isDeviceConnected = _currentDeviceConnected != null && _currentDeviceConnected!.isNotEmpty;
+
     // --- Updated Logic: Dry = "No Rain", Wet = Status ---
     String getRainStatus() {
       if (_sensorRainIntensity > 3500) return "No Rain";
@@ -694,7 +732,6 @@ class _DashboardContentState extends State<DashboardContent> {
                     radius: 24,
                     backgroundColor: const Color(0xFF2962FF),
                     backgroundImage: _userProfileUrl != null ? NetworkImage(_userProfileUrl!) : null,
-                    // Top Right Corner Initials Logic
                     child: _userProfileUrl == null 
                         ? Text(_getInitials(_userName), style: const TextStyle(fontWeight: FontWeight.bold, color: Color.fromARGB(255, 255, 255, 255))) 
                         : null,
@@ -704,8 +741,8 @@ class _DashboardContentState extends State<DashboardContent> {
             ),
             const SizedBox(height: 16),
 
-            // --- Incomplete Profile Notice ---
-            if (_isProfileIncomplete && !_isLoadingUser)
+            // --- 1. Incomplete Profile Notice ---
+            if (_isProfileIncomplete && !_isLoadingUser) ...[
               GestureDetector(
                 onTap: () {
                   Navigator.push(
@@ -714,7 +751,7 @@ class _DashboardContentState extends State<DashboardContent> {
                   ).then((_) => _fetchUserData());
                 },
                 child: Container(
-                  margin: const EdgeInsets.only(bottom: 24),
+                  margin: const EdgeInsets.only(bottom: 16),
                   padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                   decoration: BoxDecoration(
                     color: Colors.orange.shade50,
@@ -729,20 +766,8 @@ class _DashboardContentState extends State<DashboardContent> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(
-                              "Complete your profile",
-                              style: TextStyle(
-                                fontWeight: FontWeight.bold,
-                                color: Colors.orange.shade900,
-                              ),
-                            ),
-                            Text(
-                              "Add your name and contact info.",
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: Colors.orange.shade800,
-                              ),
-                            ),
+                            Text("Complete your profile", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.orange.shade900)),
+                            Text("Add your name and contact info.", style: TextStyle(fontSize: 12, color: Colors.orange.shade800)),
                           ],
                         ),
                       ),
@@ -750,11 +775,48 @@ class _DashboardContentState extends State<DashboardContent> {
                     ],
                   ),
                 ),
-              )
-            else
+              ),
+            ],
+
+            // --- 2. NEW: Device Not Connected Notice ---
+            if (!isDeviceConnected && !_isLoadingUser) ...[
+              GestureDetector(
+                onTap: () {
+                  Navigator.push(
+                    context, 
+                    MaterialPageRoute(builder: (context) => const DevicePairingScreen())
+                  ).then((_) => _fetchUserData());
+                },
+                child: Container(
+                  margin: const EdgeInsets.only(bottom: 24),
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  decoration: BoxDecoration(
+                    color: Colors.red.shade50,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.red.shade200),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(Icons.link_off, color: Colors.red.shade800),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text("No Device Connected", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.red.shade900)),
+                            Text("Tap here to pair your Smart Rack.", style: TextStyle(fontSize: 12, color: Colors.red.shade800)),
+                          ],
+                        ),
+                      ),
+                      Icon(Icons.arrow_forward_ios, size: 16, color: Colors.red.shade800),
+                    ],
+                  ),
+                ),
+              ),
+            ] else 
               const SizedBox(height: 24),
 
-            // Weather Card
+            // Weather Card (Always Active)
             FutureBuilder<Map<String, dynamic>>(
               future: _fetchWeather(),
               builder: (context, snapshot) {
@@ -800,57 +862,61 @@ class _DashboardContentState extends State<DashboardContent> {
 
             const SizedBox(height: 24),
 
-            // Sensor Cards Grid
-            GridView.count(
-              crossAxisCount: 2,
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              crossAxisSpacing: 16,
-              mainAxisSpacing: 16,
-              childAspectRatio: 0.85,
-              children: [
-                _buildSensorCard(
-                  title: "Humidity", 
-                  value: "${_sensorHumidity.toStringAsFixed(1)}%", 
-                  icon: Icons.water_drop_outlined, 
-                  color: Colors.green, 
-                  bgColor: const Color(0xFFE8F5E9), 
-                  onTap: () => _showDetailModal("Humidity", "${_sensorHumidity.toStringAsFixed(1)}%", _humidityHistory, "Humidity is optimal for drying.")
+            // --- 3. Sensor Cards Grid (Disabled if Disconnected) ---
+            IgnorePointer(
+              ignoring: !isDeviceConnected, // Disable clicks if no device
+              child: Opacity(
+                opacity: isDeviceConnected ? 1.0 : 0.3, // Fade out if no device
+                child: GridView.count(
+                  crossAxisCount: 2,
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  crossAxisSpacing: 16,
+                  mainAxisSpacing: 16,
+                  childAspectRatio: 0.85,
+                  children: [
+                    _buildSensorCard(
+                      title: "Humidity", 
+                      value: "${_sensorHumidity.toStringAsFixed(1)}%", 
+                      icon: Icons.water_drop_outlined, 
+                      color: Colors.green, 
+                      bgColor: const Color(0xFFE8F5E9), 
+                      onTap: () => _showDetailModal("Humidity", "${_sensorHumidity.toStringAsFixed(1)}%", _humidityHistory, "Humidity is optimal for drying.")
+                    ),
+                    _buildSensorCard(
+                      title: "Temperature", 
+                      value: "${_sensorTemperature.toStringAsFixed(1)}°C", 
+                      icon: Icons.thermostat, 
+                      color: Colors.blue, 
+                      bgColor: const Color(0xFFE3F2FD), 
+                      onTap: () => _showDetailModal("Temperature", "${_sensorTemperature.toStringAsFixed(1)}°C", _tempHistory, "Temperature is good for drying.")
+                    ),
+                    _buildSensorCard(
+                      title: "Rain Sensor", 
+                      value: getRainStatus(), 
+                      subtitle: isRaining ? "Alert" : null, 
+                      icon: Icons.cloud_outlined, 
+                      color: isRaining ? Colors.orange : Colors.green, 
+                      bgColor: const Color(0xFFE8F5E9), 
+                      onTap: () => _showDetailModal("Rain Sensor", getRainStatus(), _rainHistory, "Current rain intensity: ${_sensorRainIntensity.toStringAsFixed(0)}")
+                    ),
+                    _buildCircleProgressCard(
+                      title: "Rain Chance", 
+                      percentage: _rainConfidence.toInt(), 
+                      icon: Icons.thunderstorm_outlined, 
+                      onTap: () => _showDetailModal("Rain Chance", "${_rainConfidence.toInt()}%", _rainConfidenceHistory, "Calculated based on humidity, temperature, light, and rain sensor.")
+                    ),
+                    _buildSensorCard(
+                      title: "Ambient Light", 
+                      value: "${_sensorLight.toStringAsFixed(0)} lux", 
+                      icon: Icons.wb_sunny_outlined, 
+                      color: Colors.orange, 
+                      bgColor: const Color(0xFFFFF3E0), 
+                      onTap: () => _showDetailModal("Ambient Light", "${_sensorLight.toStringAsFixed(0)} lux", _lightHistory, "Good sunlight for drying.")
+                    ),
+                  ],
                 ),
-                _buildSensorCard(
-                  title: "Temperature", 
-                  value: "${_sensorTemperature.toStringAsFixed(1)}°C", 
-                  icon: Icons.thermostat, 
-                  color: Colors.blue, 
-                  bgColor: const Color(0xFFE3F2FD), 
-                  onTap: () => _showDetailModal("Temperature", "${_sensorTemperature.toStringAsFixed(1)}°C", _tempHistory, "Temperature is good for drying.")
-                ),
-                // --- UPDATED RAIN SENSOR CARD ---
-                _buildSensorCard(
-                  title: "Rain Sensor", 
-                  value: getRainStatus(), 
-                  subtitle: isRaining ? "Alert" : null, // Show Alert only if raining
-                  icon: Icons.cloud_outlined, 
-                  color: isRaining ? Colors.orange : Colors.green, 
-                  bgColor: const Color(0xFFE8F5E9), 
-                  onTap: () => _showDetailModal("Rain Sensor", getRainStatus(), _rainHistory, "Current rain intensity: ${_sensorRainIntensity.toStringAsFixed(0)}")
-                ),
-                _buildCircleProgressCard(
-                  title: "Rain Chance", 
-                  percentage: _rainConfidence.toInt(), 
-                  icon: Icons.thunderstorm_outlined, 
-                  onTap: () => _showDetailModal("Rain Chance", "${_rainConfidence.toInt()}%", _rainConfidenceHistory, "Calculated based on humidity, temperature, light, and rain sensor.")
-                ),
-                _buildSensorCard(
-                  title: "Ambient Light", 
-                  value: "${_sensorLight.toStringAsFixed(0)} lux", 
-                  icon: Icons.wb_sunny_outlined, 
-                  color: Colors.orange, 
-                  bgColor: const Color(0xFFFFF3E0), 
-                  onTap: () => _showDetailModal("Ambient Light", "${_sensorLight.toStringAsFixed(0)} lux", _lightHistory, "Good sunlight for drying.")
-                ),
-                // --- LOAD WEIGHT REMOVED FROM HERE ---
-              ],
+              ),
             ),
             const SizedBox(height: 80),
           ],
