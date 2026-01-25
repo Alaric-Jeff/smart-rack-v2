@@ -1,0 +1,143 @@
+{
+  "project_info": {
+    "project_number": "346631879936",
+    "firebase_url": "https://smart-drying-iot-default-rtdb.asia-southeast1.firebasedatabase.app",
+    "project_id": "smart-drying-iot",
+    "storage_bucket": "smart-drying-iot.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:346631879936:android:de955d5384477ae0ec47e5",
+        "android_client_info": {
+          "package_name": "com.example.flutter_frontend"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "346631879936-3sruv8mnlungu3o6lvs52gom5u64ut0n.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.flutter_frontend",
+            "certificate_hash": "8beb2d6c54af1b822025f83da76c4176bb1166a8"
+          }
+        },
+        {
+          "client_id": "346631879936-e9980o68svm512e7la53ni15s1oqdol7.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDF6qh928QqLNNHXKZ2My1kP7FtefxggmY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "346631879936-e9980o68svm512e7la53ni15s1oqdol7.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "346631879936-8fvnaa6vphi182mib06qjb1b0kovblos.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.flutterFrontend"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:346631879936:android:e25a45ed18ca7405ec47e5",
+        "android_client_info": {
+          "package_name": "com.example.slds_app1"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "346631879936-de9cap5v91f3vimqsfui3pf9h7qlnohl.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.slds_app1",
+            "certificate_hash": "8beb2d6c54af1b822025f83da76c4176bb1166a8"
+          }
+        },
+        {
+          "client_id": "346631879936-e9980o68svm512e7la53ni15s1oqdol7.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDF6qh928QqLNNHXKZ2My1kP7FtefxggmY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "346631879936-e9980o68svm512e7la53ni15s1oqdol7.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "346631879936-8fvnaa6vphi182mib06qjb1b0kovblos.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.flutterFrontend"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:346631879936:android:6ca17a821ee3cc64ec47e5",
+        "android_client_info": {
+          "package_name": "saldc.ph"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "346631879936-uuhrjq17h6f2eb8sd0u0v1h7adq6t9bn.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "saldc.ph",
+            "certificate_hash": "c4b8c9cf1f4d1d8e1c93c84e05ce48a90cbd615b"
+          }
+        },
+        {
+          "client_id": "346631879936-e9980o68svm512e7la53ni15s1oqdol7.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDF6qh928QqLNNHXKZ2My1kP7FtefxggmY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "346631879936-e9980o68svm512e7la53ni15s1oqdol7.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "346631879936-8fvnaa6vphi182mib06qjb1b0kovblos.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.flutterFrontend"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
