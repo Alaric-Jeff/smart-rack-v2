@@ -337,7 +337,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                     border: OutlineInputBorder(),
                     contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 12),
                   ),
-                  value: _selectedDeactivationReason,
+                  initialValue: _selectedDeactivationReason,
                   items: _deactivationReasons.map((reason) {
                     return DropdownMenuItem(value: reason, child: Text(reason, style: const TextStyle(fontSize: 14)));
                   }).toList(),
