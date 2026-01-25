@@ -184,7 +184,7 @@ class _DashboardContentState extends State<DashboardContent> {
   void _startSensorUpdates() {
     // Start periodic updates
     _sensorUpdateTimer = Timer.periodic(
-      Duration(seconds: SENSOR_UPDATE_INTERVAL_SECONDS),
+      const Duration(seconds: SENSOR_UPDATE_INTERVAL_SECONDS),
       (_) => _fetchSensorData(),
     );
     // Fetch immediately
@@ -387,7 +387,7 @@ class _DashboardContentState extends State<DashboardContent> {
   }
 
   void _cleanupOldHistory() {
-    DateTime cutoff = DateTime.now().subtract(Duration(minutes: HISTORY_DURATION_MINUTES));
+    DateTime cutoff = DateTime.now().subtract(const Duration(minutes: HISTORY_DURATION_MINUTES));
     
     _humidityHistory.removeWhere((point) => point.timestamp.isBefore(cutoff));
     _tempHistory.removeWhere((point) => point.timestamp.isBefore(cutoff));
