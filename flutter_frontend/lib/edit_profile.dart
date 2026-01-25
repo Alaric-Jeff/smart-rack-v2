@@ -32,6 +32,16 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
+  // --- Deactivation Variables ---
+  String? _selectedDeactivationReason;
+  final List<String> _deactivationReasons = [
+    "I need a break",
+    "I have privacy concerns",
+    "I created a new account",
+    "The app is not useful for me",
+    "Other"
+  ];
+
   @override
   void initState() {
     super.initState();
@@ -301,29 +311,116 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     }
   }
 
-  void _deleteAccount() {
-    showDialog(context: context, builder: (context) => AlertDialog(
-        title: const Text("Delete Account?", style: TextStyle(color: Colors.red)),
-        content: const Text("This action cannot be undone."),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text("CANCEL")),
-          TextButton(onPressed: () async { Navigator.pop(context); await _performAccountDeletion(); }, child: const Text("DELETE", style: TextStyle(color: Colors.red))),
-        ],
-      ));
+  // --- UPDATED DEACTIVATION LOGIC ---
+  void _deactivateAccount() {
+    // Reset selection
+    _selectedDeactivationReason = null;
+
+    showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          return AlertDialog(
+            title: const Text("Deactivate Account", style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  "We're sorry to see you go. Please tell us why you are deactivating:",
+                  style: TextStyle(fontSize: 14),
+                ),
+                const SizedBox(height: 15),
+                DropdownButtonFormField<String>(
+                  decoration: const InputDecoration(
+                    labelText: "Reason",
+                    border: OutlineInputBorder(),
+                    contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                  ),
+                  value: _selectedDeactivationReason,
+                  items: _deactivationReasons.map((reason) {
+                    return DropdownMenuItem(value: reason, child: Text(reason, style: const TextStyle(fontSize: 14)));
+                  }).toList(),
+                  onChanged: (val) {
+                    setDialogState(() => _selectedDeactivationReason = val);
+                  },
+                ),
+                const SizedBox(height: 20),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.orange.shade50,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.orange.shade200),
+                  ),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(Icons.info_outline, color: Colors.orange.shade800, size: 20),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          "Your account will be deactivated immediately. You can recover it by logging in within 30 days. After 30 days, your data will be permanently deleted.",
+                          style: TextStyle(fontSize: 12, color: Colors.orange.shade900),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text("CANCEL", style: TextStyle(color: Colors.grey)),
+              ),
+              ElevatedButton(
+                onPressed: _selectedDeactivationReason == null 
+                  ? null 
+                  : () {
+                      Navigator.pop(context);
+                      _performDeactivation();
+                    },
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+                child: const Text("DEACTIVATE", style: TextStyle(color: Colors.white)),
+              ),
+            ],
+          );
+        },
+      ),
+    );
   }
 
-  Future<void> _performAccountDeletion() async {
+  Future<void> _performDeactivation() async {
+    setState(() => _isLoading = true);
     try {
       final user = _auth.currentUser;
       if (user == null) return;
-      await _firestore.collection('users').doc(user.uid).delete();
-      await user.delete();
+
+      // Calculate 30 days from now
+      DateTime scheduledDeletion = DateTime.now().add(const Duration(days: 30));
+
+      // Update Firestore: Do NOT delete, just flag as deactivated
+      await _firestore.collection('users').doc(user.uid).update({
+        'isDeactivated': true,
+        'deactivationReason': _selectedDeactivationReason ?? "Unknown",
+        'deactivatedAt': FieldValue.serverTimestamp(),
+        'scheduledDeletionDate': Timestamp.fromDate(scheduledDeletion),
+      });
+
+      // Sign out the user
+      await _auth.signOut();
+
       if (mounted) {
-        _showSnackBar('Account deleted', Colors.green);
+        _showSnackBar('Account deactivated. You can recover it within 30 days.', Colors.orange);
+        // Pop all routes and go back to login (assuming login is the root)
         Navigator.of(context).popUntil((route) => route.isFirst);
       }
     } catch (e) {
-      _showSnackBar('Error deleting account', Colors.red);
+      if (mounted) {
+        setState(() => _isLoading = false);
+        _showSnackBar('Error deactivating account: $e', Colors.red);
+      }
     }
   }
 
@@ -589,7 +686,8 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                   ),
                 ),
                 const SizedBox(height: 20),
-                Center(child: TextButton(onPressed: _deleteAccount, child: const Text("Delete Account", style: TextStyle(color: Colors.red)))),
+                // UPDATED: Deactivate Button
+                Center(child: TextButton(onPressed: _deactivateAccount, child: const Text("Deactivate Account", style: TextStyle(color: Colors.red)))),
                 const SizedBox(height: 20),
               ],
             ),
