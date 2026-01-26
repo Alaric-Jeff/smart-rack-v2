@@ -24,14 +24,17 @@ void main() async {
 }
 
 class SmartRackApp extends StatelessWidget {
-  const SmartRackApp({super.key});
+  const SmartRackApp({super.key});  
 
   @override
   Widget build(BuildContext context) {
+
+    final user = FirebaseAuth.instance.currentUser;
+
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       theme: ThemeData(fontFamily: 'sans-serif'),
-      home: const LoginPage(),
+      home: user == null ? const LoginPage() : const HomeScreen() 
     );
   }
 }
