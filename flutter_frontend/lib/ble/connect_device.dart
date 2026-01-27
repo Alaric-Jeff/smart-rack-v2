@@ -1,23 +1,30 @@
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'dart:async';
 
 class BleConnectService {
-  Future<void> connectToDevice(BluetoothDevice device) async {
-    await FlutterBluePlus.stopScan();
+  Future<bool> connectToDevice(BluetoothDevice device) async {
+    try {
+      await FlutterBluePlus.stopScan();
+    } catch (e) {
+      print('Stop scan error: $e');
+    }
+
     try {
       await device.connect(
         timeout: const Duration(seconds: 10),
         autoConnect: false,
-        license: License.free, 
+        license: License.free,
       );
-    } catch (_) {
-    }
-  }
-
-  Future<void> disconnectDevice(BluetoothDevice device) async {
-    try {
-      await device.disconnect();
-    } catch (_) {
-
+      return true;
+    } on FlutterBluePlusException catch (e) {
+      print('BLE connection error: ${e.code} - ${e.description}');
+      return false;
+    } on TimeoutException catch (e) {
+      print('Connection timeout: $e');
+      return false;
+    } catch (e) {
+      print('Connection error: $e');
+      return false;
     }
   }
 }
