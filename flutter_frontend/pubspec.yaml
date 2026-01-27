@@ -23,6 +23,7 @@ dependencies:
   firebase_storage: ^13.0.5
   image_picker: ^1.0.7
   flutter_facebook_auth: ^6.0.4
+  flutter_blue_plus: ^2.1.0
 
 # --- DEV DEPENDENCIES ---
 dev_dependencies:
