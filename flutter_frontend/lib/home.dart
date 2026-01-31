@@ -625,6 +625,7 @@ class _DashboardContentState extends State<DashboardContent> {
     );
   }
 
+  // --- UPDATED SHOW DETAIL MODAL ---
   void _showDetailModal(String title, String value, List<SensorDataPoint> historyData, String statusMsg) {
     showModalBottomSheet(
       context: context,
@@ -667,7 +668,20 @@ class _DashboardContentState extends State<DashboardContent> {
                           children: [
                             const Text("Recent History (Last 30 min)", style: TextStyle(color: Colors.grey, fontSize: 14)),
                             const SizedBox(height: 20),
-                            historyData.isEmpty
+                            
+                            // -- CHANGED LOGIC HERE --
+                            title == "Weather" 
+                            ? const SizedBox(
+                                height: 100, 
+                                width: double.infinity, 
+                                child: Center(
+                                  child: Text(
+                                    "Forecast data provided by external weather service", 
+                                    style: TextStyle(color: Colors.grey, fontStyle: FontStyle.italic, fontWeight: FontWeight.w500)
+                                  )
+                                )
+                              )
+                            : historyData.isEmpty
                                 ? SizedBox(height: 100, width: double.infinity, child: Center(child: Text("Waiting for sensor data...", style: TextStyle(color: Colors.grey.shade400, fontStyle: FontStyle.italic))))
                                 : SizedBox(height: 150, width: double.infinity, child: CustomPaint(painter: TimeSeriesChartPainter(data: historyData, color: const Color(0xFF2962FF)))),
                           ],
@@ -676,8 +690,11 @@ class _DashboardContentState extends State<DashboardContent> {
                       const SizedBox(height: 24),
                       const Text("Status", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
                       const SizedBox(height: 8),
+                      // -- CHANGED LOGIC HERE FOR STATUS --
                       Text(
-                          value == "0.0" || value == "0" || _currentDeviceConnected == null ? "Connect your Smart Rack sensors to see real-time status." : statusMsg,
+                          title == "Weather" 
+                            ? "Weather conditions are updated periodically based on your location. This data is independent of your local sensors."
+                            : (value == "0.0" || value == "0" || _currentDeviceConnected == null ? "Connect your Smart Rack sensors to see real-time status." : statusMsg),
                           style: const TextStyle(fontSize: 14, color: Color(0xFF5A6175), height: 1.5)),
                     ],
                   ),
