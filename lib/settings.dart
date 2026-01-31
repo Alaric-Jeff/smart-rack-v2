@@ -323,6 +323,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  // --- BLE FUNCTION (Placeholder) ---
+  void _onBluetoothTap() {
+    // TODO: Insert your BLE Scan or Connect logic here
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text("Bluetooth functionality ready for integration.")),
+    );
+    // Example: Navigator.push(context, MaterialPageRoute(builder: (context) => BleScanScreen()));
+  }
+
   // --- CONFIRMATION MODAL ---
   void _showConfirmation(String title, bool newValue, VoidCallback onConfirm) {
     showDialog(
@@ -474,7 +483,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               child: Column(
                                 children: [
                                   _buildInfoRow(Icons.email_outlined, "EMAIL", _userEmail),
-                                  // --- REMOVED "CONNECTED DEVICE" TO MATCH HOME SCREEN ---
                                   const Divider(height: 30),
                                   _buildInfoRow(Icons.phone_android, "USER ID", _deviceId),
                                   const Divider(height: 30),
@@ -668,6 +676,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             MaterialPageRoute(builder: (context) => const DevicePairingScreen()),
                           );
                       },
+                    ),
+                    Divider(height: 1, color: Colors.grey.shade100, indent: 60, endIndent: 20),
+
+                    // --- NEW: BLUETOOTH BUTTON FOR BLE FILES ---
+                    _buildNavTile(
+                      title: "Bluetooth Connection", 
+                      icon: Icons.bluetooth, 
+                      onTap: _onBluetoothTap, // Calls the placeholder function
                     ),
                     Divider(height: 1, color: Colors.grey.shade100, indent: 60, endIndent: 20),
 
