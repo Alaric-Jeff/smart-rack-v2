@@ -2,6 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_storage/firebase_storage.dart'; // Added for Storage
+import 'package:image_picker/image_picker.dart'; // Added for Gallery
+import 'dart:io'; // Added for File handling
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 
@@ -26,11 +29,13 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   late TextEditingController _addressController;
 
   String? _photoUrl;
+  File? _selectedImage; // Added to hold the new local image
   bool _hasPassword = false;
   String? _signInProvider;
 
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final FirebaseStorage _storage = FirebaseStorage.instance; // Added Storage Instance
 
   // --- Deactivation Variables ---
   String? _selectedDeactivationReason;
@@ -74,6 +79,28 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     _contactNumberController.dispose();
     _addressController.dispose();
     super.dispose();
+  }
+
+  // --- NEW: Function to Pick Image ---
+  Future<void> _pickImage() async {
+    try {
+      final ImagePicker picker = ImagePicker();
+      final XFile? image = await picker.pickImage(
+        source: ImageSource.gallery, 
+        maxWidth: 512, 
+        maxHeight: 512, 
+        imageQuality: 75
+      );
+
+      if (image != null) {
+        setState(() {
+          _selectedImage = File(image.path);
+        });
+      }
+    } catch (e) {
+      debugPrint("Image Picker Error: $e");
+      _showSnackBar("Error picking image", Colors.red);
+    }
   }
 
   Future<List<String>> _fetchAddressSuggestions(String query) async {
@@ -249,6 +276,23 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       if (user == null) return;
 
       final Map<String, dynamic> updates = {};
+
+      // --- NEW: Upload Image if Selected ---
+      if (_selectedImage != null) {
+        try {
+          final String fileName = '${user.uid}_profile.jpg';
+          final Reference ref = _storage.ref().child('user_images').child(fileName);
+          
+          await ref.putFile(_selectedImage!);
+          final String downloadUrl = await ref.getDownloadURL();
+          
+          updates['photoUrl'] = downloadUrl;
+        } catch (e) {
+          debugPrint("Image upload failed: $e");
+          _showSnackBar("Failed to upload image, but saving text data.", Colors.orange);
+        }
+      }
+
       updates['displayName'] = _displayNameController.text.trim();
       updates['firstName'] = _firstNameController.text.trim();
       updates['lastName'] = _lastNameController.text.trim();
@@ -259,6 +303,12 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       updates['isPhoneVerified'] = _isPhoneVerified;
 
       await _firestore.collection('users').doc(user.uid).update(updates);
+
+      // Update local state if we uploaded a photo so we don't show the FileImage next time
+      if (updates.containsKey('photoUrl')) {
+        _photoUrl = updates['photoUrl'];
+        _selectedImage = null; 
+      }
 
       if (mounted) {
         setState(() => _isSaving = false);
@@ -455,12 +505,48 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                 const Text("Manage Account", style: TextStyle(fontSize: 14, color: Colors.grey)),
                 const SizedBox(height: 30),
 
+                // --- UPDATED PROFILE PICTURE SECTION ---
                 Center(
-                  child: Container(
-                    width: 100, height: 100,
-                    decoration: BoxDecoration(color: const Color(0xFF2962FF), shape: BoxShape.circle, boxShadow: [BoxShadow(color: const Color(0xFF2962FF).withOpacity(0.3), blurRadius: 15, offset: const Offset(0, 5))]),
-                    alignment: Alignment.center,
-                    child: Text(_getInitials(), style: const TextStyle(fontSize: 36, fontWeight: FontWeight.bold, color: Colors.white, letterSpacing: 2)),
+                  child: GestureDetector(
+                    onTap: _pickImage, // Allow tapping to change image
+                    child: Stack(
+                      children: [
+                        Container(
+                          width: 100, height: 100,
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF2962FF), 
+                            shape: BoxShape.circle, 
+                            boxShadow: [BoxShadow(color: const Color(0xFF2962FF).withOpacity(0.3), blurRadius: 15, offset: const Offset(0, 5))],
+                            // 1. Show Local Image if picked
+                            image: _selectedImage != null
+                              ? DecorationImage(image: FileImage(_selectedImage!), fit: BoxFit.cover)
+                              : (_photoUrl != null && _photoUrl!.isNotEmpty
+                                  // 2. Show Online Image if available
+                                  ? DecorationImage(image: NetworkImage(_photoUrl!), fit: BoxFit.cover)
+                                  : null),
+                          ),
+                          alignment: Alignment.center,
+                          // 3. Fallback to Initials ONLY if no local image AND no online image
+                          child: (_selectedImage == null && (_photoUrl == null || _photoUrl!.isEmpty))
+                              ? Text(_getInitials(), style: const TextStyle(fontSize: 36, fontWeight: FontWeight.bold, color: Colors.white, letterSpacing: 2))
+                              : null,
+                        ),
+                        // Camera Icon Overlay
+                        Positioned(
+                          bottom: 0,
+                          right: 0,
+                          child: Container(
+                            padding: const EdgeInsets.all(6),
+                            decoration: const BoxDecoration(
+                              color: Colors.white,
+                              shape: BoxShape.circle,
+                              boxShadow: [BoxShadow(color: Colors.black26, blurRadius: 4)],
+                            ),
+                            child: const Icon(Icons.camera_alt, size: 20, color: Color(0xFF2962FF)),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
                 const SizedBox(height: 30),
