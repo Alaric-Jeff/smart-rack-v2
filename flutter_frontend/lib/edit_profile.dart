@@ -2,11 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_storage/firebase_storage.dart'; // Added for Storage
-import 'package:image_picker/image_picker.dart'; // Added for Gallery
-import 'dart:io'; // Added for File handling
+import 'package:firebase_storage/firebase_storage.dart';
+import 'package:image_picker/image_picker.dart';
+import 'dart:io';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import './sms/send_otp.dart';
+import './sms/verify_otp.dart';
 
 class EditProfileScreen extends StatefulWidget {
   const EditProfileScreen({super.key});
@@ -19,6 +21,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   final _formKey = GlobalKey<FormState>();
   bool _isLoading = true;
   bool _isSaving = false;
+  bool _isSendingOtp = false; // NEW: Track OTP sending state
 
   bool _isPhoneVerified = false;
 
@@ -29,13 +32,13 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   late TextEditingController _addressController;
 
   String? _photoUrl;
-  File? _selectedImage; // Added to hold the new local image
+  File? _selectedImage;
   bool _hasPassword = false;
   String? _signInProvider;
 
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  final FirebaseStorage _storage = FirebaseStorage.instance; // Added Storage Instance
+  final FirebaseStorage _storage = FirebaseStorage.instance;
 
   // --- Deactivation Variables ---
   String? _selectedDeactivationReason;
@@ -81,7 +84,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     super.dispose();
   }
 
-  // --- NEW: Function to Pick Image ---
   Future<void> _pickImage() async {
     try {
       final ImagePicker picker = ImagePicker();
@@ -130,56 +132,141 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     return [];
   }
 
-  void _verifyPhoneNumber() {
+  // --- UPDATED: Real SMS OTP Verification ---
+  Future<void> _verifyPhoneNumber() async {
     String number = _contactNumberController.text.trim();
     if (number.length != 10 || !number.startsWith('9')) {
       _showSnackBar("Please enter a valid 10-digit number starting with 9", Colors.red);
       return;
     }
 
+    // Format phone number for Philippines (+63)
+    String fullPhoneNumber = "+63$number";
+
+    // Show loading indicator
+    setState(() => _isSendingOtp = true);
+
+    try {
+      // Call the sendOtp function
+      final result = await sendOtp(phoneNumber: fullPhoneNumber);
+
+      setState(() => _isSendingOtp = false);
+
+      if (result['status'] == 'success') {
+        // OTP sent successfully, show verification dialog
+        _showOtpVerificationDialog(fullPhoneNumber);
+      } else {
+        // Failed to send OTP
+        _showSnackBar(
+          result['message'] ?? 'Failed to send OTP. Please try again.',
+          Colors.red
+        );
+      }
+    } catch (e) {
+      setState(() => _isSendingOtp = false);
+      debugPrint("Send OTP Error: $e");
+      _showSnackBar("Error sending OTP: ${e.toString()}", Colors.red);
+    }
+  }
+
+  void _showOtpVerificationDialog(String phoneNumber) {
     TextEditingController otpController = TextEditingController();
+    bool isVerifying = false;
+
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (context) => AlertDialog(
-        title: const Text("Verify Phone Number"),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text("A verification code has been sent to +63 $number"),
-            const SizedBox(height: 10),
-            const Text("Demo Code: 123456", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.blue)),
-            const SizedBox(height: 20),
-            TextField(
-              controller: otpController,
-              keyboardType: TextInputType.number,
-              inputFormatters: [LengthLimitingTextInputFormatter(6)],
-              decoration: const InputDecoration(
-                labelText: "Enter 6-digit OTP",
-                border: OutlineInputBorder(),
-              ),
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          return AlertDialog(
+            title: const Text("Verify Phone Number"),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text("A verification code has been sent to $phoneNumber"),
+                const SizedBox(height: 20),
+                TextField(
+                  controller: otpController,
+                  keyboardType: TextInputType.number,
+                  inputFormatters: [
+                    FilteringTextInputFormatter.digitsOnly,
+                    LengthLimitingTextInputFormatter(6)
+                  ],
+                  decoration: const InputDecoration(
+                    labelText: "Enter 6-digit OTP",
+                    border: OutlineInputBorder(),
+                    hintText: "000000",
+                  ),
+                  autofocus: true,
+                ),
+                const SizedBox(height: 10),
+                const Text(
+                  "Please check your SMS inbox",
+                  style: TextStyle(fontSize: 12, color: Colors.grey),
+                ),
+              ],
             ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text("CANCEL"),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              if (otpController.text == "123456") {
-                setState(() => _isPhoneVerified = true);
-                Navigator.pop(context);
-                _showSnackBar("Phone number verified!", Colors.green);
-              } else {
-                _showSnackBar("Invalid OTP", Colors.red);
-              }
-            },
-            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF2962FF)),
-            child: const Text("VERIFY", style: TextStyle(color: Colors.white)),
-          ),
-        ],
+            actions: [
+              TextButton(
+                onPressed: isVerifying ? null : () => Navigator.pop(context),
+                child: const Text("CANCEL"),
+              ),
+              ElevatedButton(
+                onPressed: isVerifying
+                    ? null
+                    : () async {
+                        String otpCode = otpController.text.trim();
+                        
+                        if (otpCode.length != 6) {
+                          _showSnackBar("Please enter a 6-digit OTP", Colors.orange);
+                          return;
+                        }
+
+                        setDialogState(() => isVerifying = true);
+
+                        try {
+                          // Call verifyOtp function
+                          final result = await verifyOtp(
+                            phoneNumber: phoneNumber,
+                            otp: otpCode,
+                          );
+
+                          if (result['status'] == 'success') {
+                            // OTP verified successfully
+                            setState(() => _isPhoneVerified = true);
+                            Navigator.pop(context);
+                            _showSnackBar("Phone number verified successfully!", Colors.green);
+                          } else {
+                            // Verification failed
+                            setDialogState(() => isVerifying = false);
+                            _showSnackBar(
+                              result['message'] ?? 'Invalid OTP. Please try again.',
+                              Colors.red
+                            );
+                          }
+                        } catch (e) {
+                          setDialogState(() => isVerifying = false);
+                          debugPrint("Verify OTP Error: $e");
+                          _showSnackBar("Error verifying OTP: ${e.toString()}", Colors.red);
+                        }
+                      },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF2962FF),
+                ),
+                child: isVerifying
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                          color: Colors.white,
+                          strokeWidth: 2,
+                        ),
+                      )
+                    : const Text("VERIFY", style: TextStyle(color: Colors.white)),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
@@ -277,7 +364,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
 
       final Map<String, dynamic> updates = {};
 
-      // --- NEW: Upload Image if Selected ---
       if (_selectedImage != null) {
         try {
           final String fileName = '${user.uid}_profile.jpg';
@@ -304,7 +390,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
 
       await _firestore.collection('users').doc(user.uid).update(updates);
 
-      // Update local state if we uploaded a photo so we don't show the FileImage next time
       if (updates.containsKey('photoUrl')) {
         _photoUrl = updates['photoUrl'];
         _selectedImage = null; 
@@ -361,9 +446,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     }
   }
 
-  // --- UPDATED DEACTIVATION LOGIC ---
   void _deactivateAccount() {
-    // Reset selection
     _selectedDeactivationReason = null;
 
     showDialog(
@@ -387,7 +470,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                     border: OutlineInputBorder(),
                     contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 12),
                   ),
-                  initialValue: _selectedDeactivationReason,
+                  value: _selectedDeactivationReason,
                   items: _deactivationReasons.map((reason) {
                     return DropdownMenuItem(value: reason, child: Text(reason, style: const TextStyle(fontSize: 14)));
                   }).toList(),
@@ -447,10 +530,8 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       final user = _auth.currentUser;
       if (user == null) return;
 
-      // Calculate 30 days from now
       DateTime scheduledDeletion = DateTime.now().add(const Duration(days: 30));
 
-      // Update Firestore: Do NOT delete, just flag as deactivated
       await _firestore.collection('users').doc(user.uid).update({
         'isDeactivated': true,
         'deactivationReason': _selectedDeactivationReason ?? "Unknown",
@@ -458,12 +539,10 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
         'scheduledDeletionDate': Timestamp.fromDate(scheduledDeletion),
       });
 
-      // Sign out the user
       await _auth.signOut();
 
       if (mounted) {
         _showSnackBar('Account deactivated. You can recover it within 30 days.', Colors.orange);
-        // Pop all routes and go back to login (assuming login is the root)
         Navigator.of(context).popUntil((route) => route.isFirst);
       }
     } catch (e) {
@@ -505,10 +584,9 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                 const Text("Manage Account", style: TextStyle(fontSize: 14, color: Colors.grey)),
                 const SizedBox(height: 30),
 
-                // --- UPDATED PROFILE PICTURE SECTION ---
                 Center(
                   child: GestureDetector(
-                    onTap: _pickImage, // Allow tapping to change image
+                    onTap: _pickImage,
                     child: Stack(
                       children: [
                         Container(
@@ -517,21 +595,17 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                             color: const Color(0xFF2962FF), 
                             shape: BoxShape.circle, 
                             boxShadow: [BoxShadow(color: const Color(0xFF2962FF).withOpacity(0.3), blurRadius: 15, offset: const Offset(0, 5))],
-                            // 1. Show Local Image if picked
                             image: _selectedImage != null
                               ? DecorationImage(image: FileImage(_selectedImage!), fit: BoxFit.cover)
                               : (_photoUrl != null && _photoUrl!.isNotEmpty
-                                  // 2. Show Online Image if available
                                   ? DecorationImage(image: NetworkImage(_photoUrl!), fit: BoxFit.cover)
                                   : null),
                           ),
                           alignment: Alignment.center,
-                          // 3. Fallback to Initials ONLY if no local image AND no online image
                           child: (_selectedImage == null && (_photoUrl == null || _photoUrl!.isEmpty))
                               ? Text(_getInitials(), style: const TextStyle(fontSize: 36, fontWeight: FontWeight.bold, color: Colors.white, letterSpacing: 2))
                               : null,
                         ),
-                        // Camera Icon Overlay
                         Positioned(
                           bottom: 0,
                           right: 0,
@@ -646,13 +720,22 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                           child: _isPhoneVerified
                             ? const Icon(Icons.check_circle, color: Colors.green, size: 30)
                             : TextButton(
-                                onPressed: _verifyPhoneNumber,
+                                onPressed: _isSendingOtp ? null : _verifyPhoneNumber,
                                 style: TextButton.styleFrom(
                                   backgroundColor: const Color(0xFFE3F2FD),
                                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
                                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                                 ),
-                                child: const Text("Verify", style: TextStyle(color: Color(0xFF2962FF), fontWeight: FontWeight.bold)),
+                                child: _isSendingOtp
+                                    ? const SizedBox(
+                                        width: 20,
+                                        height: 20,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                          valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF2962FF)),
+                                        ),
+                                      )
+                                    : const Text("Verify", style: TextStyle(color: Color(0xFF2962FF), fontWeight: FontWeight.bold)),
                               ),
                         ),
                       ],
@@ -772,7 +855,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                   ),
                 ),
                 const SizedBox(height: 20),
-                // UPDATED: Deactivate Button
                 Center(child: TextButton(onPressed: _deactivateAccount, child: const Text("Deactivate Account", style: TextStyle(color: Colors.red)))),
                 const SizedBox(height: 20),
               ],
@@ -815,7 +897,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   }
 }
 
-// ========== PASSWORD DIALOG WITH ENHANCED VALIDATION ==========
+// ========== PASSWORD DIALOG ==========
 class _PasswordDialog extends StatefulWidget {
   final bool hasPassword;
   final String? signInProvider;
@@ -845,7 +927,6 @@ class _PasswordDialogState extends State<_PasswordDialog> {
   bool _obsNew = true;
   bool _obsConfirm = true;
 
-  // Live validation states
   bool _hasMinLength = false;
   bool _hasMaxLength = true;
   bool _hasUppercase = false;
@@ -899,10 +980,6 @@ class _PasswordDialogState extends State<_PasswordDialog> {
     return null;
   }
 
-  bool get _isPasswordValid {
-    return _hasMinLength && _hasMaxLength && _hasUppercase && _hasDigit && _hasSpecialChar;
-  }
-
   Widget _buildValidationIndicator(String label, bool isValid) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 2),
@@ -940,7 +1017,6 @@ class _PasswordDialogState extends State<_PasswordDialog> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // Current Password (only for password change)
               if (widget.hasPassword) ...[
                 TextFormField(
                   controller: _currentController,
@@ -958,7 +1034,6 @@ class _PasswordDialogState extends State<_PasswordDialog> {
                 const SizedBox(height: 16),
               ],
 
-              // New Password
               TextFormField(
                 controller: _newController,
                 obscureText: _obsNew,
@@ -975,7 +1050,6 @@ class _PasswordDialogState extends State<_PasswordDialog> {
                   final baseValidation = _validatePassword(value);
                   if (baseValidation != null) return baseValidation;
                   
-                  // Check if new password equals current password (for change password only)
                   if (widget.hasPassword && value == _currentController.text) {
                     return 'New password must be different from current password';
                   }
@@ -985,7 +1059,6 @@ class _PasswordDialogState extends State<_PasswordDialog> {
               ),
               const SizedBox(height: 8),
               
-              // Password Requirements Label
               const Text(
                 "Password must contain:",
                 style: TextStyle(
@@ -996,7 +1069,6 @@ class _PasswordDialogState extends State<_PasswordDialog> {
               ),
               const SizedBox(height: 6),
               
-              // Live Validation Indicators
               _buildValidationIndicator("8-50 characters", _hasMinLength && _hasMaxLength),
               _buildValidationIndicator("At least 1 uppercase letter (A-Z)", _hasUppercase),
               _buildValidationIndicator("At least 1 digit (0-9)", _hasDigit),
@@ -1004,7 +1076,6 @@ class _PasswordDialogState extends State<_PasswordDialog> {
               
               const SizedBox(height: 16),
 
-              // Confirm Password
               TextFormField(
                 controller: _confirmController,
                 obscureText: _obsConfirm,
