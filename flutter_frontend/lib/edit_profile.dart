@@ -676,9 +676,9 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (_isLoading) {
+    if (_isLoading)
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
-    }
+
     return Scaffold(
       backgroundColor: const Color(0xFFF8F9FB),
       body: SafeArea(
