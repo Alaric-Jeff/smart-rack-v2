@@ -11,7 +11,7 @@ import 'firebase_options.dart';
 import 'signup.dart';
 import 'terms_and_condtions.dart';
 import 'home.dart';
-import 'otp_screen.dart'; // ADDED: Import the OTP Screen
+import 'otp_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -103,16 +103,26 @@ class _LoginPageState extends State<LoginPage> {
         debugPrint("User authenticated but missing Firestore doc. Creating one now...");
         
         await _firestore.collection('users').doc(uid).set({
+          'uuid': uid,
           'email': user.email ?? _emailController.text.trim(),
-          'uid': uid,
-          'createdAt': FieldValue.serverTimestamp(),
           'displayName': user.displayName ?? 'User',
-          'role': 'user',
+          'firstName': user.displayName?.split(' ').first ?? '',
+          'lastName': user.displayName?.split(' ').skip(1).join(' ') ?? '',
+          'contactNumber': null,
+          'signInProvider': 'manual',
+          'photoUrl': null,
+          'address': null,
+          'devices': [],
           'emailVerified': user.emailVerified,
-          'is2FAEnabled': false, // Default false
+          'is2FAEnabled': false,
+          'createdAt': FieldValue.serverTimestamp(),
+          'updatedAt': FieldValue.serverTimestamp(),
         });
         
         debugPrint("Missing document created successfully.");
+        
+        // ✅ RELOAD the document after creating it
+        userDoc = await _firestore.collection('users').doc(uid).get();
       } else {
         // Sync emailVerified status
         if (userDoc.data() != null) {
@@ -126,7 +136,7 @@ class _LoginPageState extends State<LoginPage> {
         }
       }
 
-      // --- NEW: 2FA CHECK LOGIC ---
+      // --- 2FA CHECK LOGIC ---
       bool is2FAEnabled = false;
       if (userDoc.exists && userDoc.data() != null) {
         Map<String, dynamic> data = userDoc.data() as Map<String, dynamic>;
@@ -495,7 +505,7 @@ class _LoginPageState extends State<LoginPage> {
     );
   }
 
-  // Google SSO Login with Email Verification Check & 2FA
+  // Google SSO Login with Auto-Registration & 2FA
   Future<void> _handleGoogleSignIn() async {
     setState(() => _isLoading = true);
 
@@ -518,19 +528,48 @@ class _LoginPageState extends State<LoginPage> {
       User? user = userCredential.user;
 
       if (user != null) {
-        DocumentSnapshot userDoc = await _firestore.collection('users').doc(user.uid).get();
+        String uuid = user.uid;
+        DocumentSnapshot userDoc = await _firestore.collection('users').doc(uuid).get();
         
+        // ✨ AUTO-CREATE ACCOUNT IF IT DOESN'T EXIST
         if (!userDoc.exists) {
-          await _auth.signOut();
-          await _googleSignIn.signOut();
+          debugPrint('New Google user detected. Creating account...');
           
+          String displayName = user.displayName ?? googleUser.displayName ?? 'Google User';
+          List<String> nameParts = displayName.split(' ');
+          String firstName = nameParts.isNotEmpty ? nameParts[0] : '';
+          String lastName = nameParts.length > 1 ? nameParts.sublist(1).join(' ') : '';
+
+          await _firestore.collection('users').doc(uuid).set({
+            'uuid': uuid,
+            'displayName': displayName,
+            'firstName': firstName,
+            'lastName': lastName,
+            'email': user.email,
+            'contactNumber': null,
+            'signInProvider': 'google.com',
+            'photoUrl': user.photoURL ?? googleUser.photoUrl,
+            'address': null,
+            'devices': [],
+            'emailVerified': user.emailVerified,
+            'is2FAEnabled': false,
+            'createdAt': FieldValue.serverTimestamp(),
+            'updatedAt': FieldValue.serverTimestamp(),
+          });
+
           if (mounted) {
             setState(() => _isLoading = false);
-            _showSnackBar('No account found. Please sign up first to create your account.', Colors.orange);
+            _showSnackBar('Welcome! Your Google account has been registered.', Colors.green);
+            
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(builder: (context) => const HomeScreen()),
+            );
           }
           return;
         }
 
+        // ✨ EXISTING USER - SYNC EMAIL VERIFICATION STATUS
         if (userDoc.data() != null) {
           Map<String, dynamic> userData = userDoc.data() as Map<String, dynamic>;
           if (userData['emailVerified'] != true) {
@@ -541,7 +580,7 @@ class _LoginPageState extends State<LoginPage> {
           }
         }
 
-        // --- NEW: 2FA CHECK LOGIC (SSO) ---
+        // ✨ CHECK 2FA STATUS
         bool is2FAEnabled = false;
         if (userDoc.data() != null) {
           Map<String, dynamic> data = userDoc.data() as Map<String, dynamic>;
@@ -553,13 +592,11 @@ class _LoginPageState extends State<LoginPage> {
           _showSnackBar('Welcome back!', Colors.green);
           
           if (is2FAEnabled) {
-            // If 2FA is ON -> Go to OTP Screen
             Navigator.push(
               context,
               MaterialPageRoute(builder: (context) => const OTPScreen()),
             );
           } else {
-            // If 2FA is OFF -> Go to Home
             Navigator.pushReplacement(
               context,
               MaterialPageRoute(builder: (context) => const HomeScreen()),
@@ -597,6 +634,34 @@ class _LoginPageState extends State<LoginPage> {
     } catch (e) {
       if (mounted) {
         setState(() => _isLoading = false);
+        
+        try {
+          await _googleSignIn.signOut();
+          
+          if (_auth.currentUser != null) {
+            try {
+              DocumentSnapshot check = await _firestore
+                  .collection('users')
+                  .doc(_auth.currentUser!.uid)
+                  .get()
+                  .timeout(const Duration(seconds: 5));
+              
+              if (!check.exists) {
+                await _auth.currentUser?.delete();
+              }
+            } catch (firestoreError) {
+              debugPrint('Firestore check failed during cleanup: $firestoreError');
+              try {
+                await _auth.currentUser?.delete();
+              } catch (deleteError) {
+                debugPrint('Could not delete auth user: $deleteError');
+              }
+            }
+          }
+        } catch (cleanupError) {
+          debugPrint('Cleanup error: $cleanupError');
+        }
+        
         _showSnackBar('An unexpected error occurred. Please try again later.', Colors.red);
         debugPrint('Google sign-in error: $e');
       }
@@ -780,7 +845,6 @@ class _LoginPageState extends State<LoginPage> {
 
                         const SizedBox(height: 20),
 
-                        // SSO Divider
                         Row(
                           children: [
                             Expanded(child: Divider(thickness: 0.5, color: Colors.grey[400])),
@@ -795,7 +859,6 @@ class _LoginPageState extends State<LoginPage> {
                         
                         const SizedBox(height: 15),
 
-                        // Google Sign In Button
                         SizedBox(
                           width: double.infinity,
                           height: 48,
@@ -867,7 +930,6 @@ class _LoginPageState extends State<LoginPage> {
 
                 const SizedBox(height: 20),
 
-                // Footer
                 RichText(
                   textAlign: TextAlign.center,
                   text: TextSpan(

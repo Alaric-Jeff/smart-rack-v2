@@ -2,11 +2,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_storage/firebase_storage.dart'; // Added for Storage
-import 'package:image_picker/image_picker.dart'; // Added for Gallery
-import 'dart:io'; // Added for File handling
+import 'package:image_picker/image_picker.dart';
+import 'dart:io';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import './sms/send_otp.dart';
+import './sms/verify_otp.dart';
+import './cloudinary/setImage.dart';
+import './cloudinary/deleteImage.dart';
 
 class EditProfileScreen extends StatefulWidget {
   const EditProfileScreen({super.key});
@@ -19,6 +22,8 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   final _formKey = GlobalKey<FormState>();
   bool _isLoading = true;
   bool _isSaving = false;
+  bool _isSendingOtp = false;
+  bool _isUploadingImage = false; // NEW: Track image upload state
 
   bool _isPhoneVerified = false;
 
@@ -29,13 +34,13 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   late TextEditingController _addressController;
 
   String? _photoUrl;
-  File? _selectedImage; // Added to hold the new local image
+  String? _photoPublicId; // NEW: Store Cloudinary public_id
+  File? _selectedImage;
   bool _hasPassword = false;
   String? _signInProvider;
 
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  final FirebaseStorage _storage = FirebaseStorage.instance; // Added Storage Instance
 
   // --- Deactivation Variables ---
   String? _selectedDeactivationReason;
@@ -44,7 +49,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     "I have privacy concerns",
     "I created a new account",
     "The app is not useful for me",
-    "Other"
+    "Other",
   ];
 
   @override
@@ -56,9 +61,15 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     _contactNumberController = TextEditingController();
     _addressController = TextEditingController();
 
-    _displayNameController.addListener(() { if (mounted) setState(() {}); });
-    _firstNameController.addListener(() { if (mounted) setState(() {}); });
-    _lastNameController.addListener(() { if (mounted) setState(() {}); });
+    _displayNameController.addListener(() {
+      if (mounted) setState(() {});
+    });
+    _firstNameController.addListener(() {
+      if (mounted) setState(() {});
+    });
+    _lastNameController.addListener(() {
+      if (mounted) setState(() {});
+    });
 
     _contactNumberController.addListener(() {
       if (_isPhoneVerified && mounted) {
@@ -81,25 +92,120 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     super.dispose();
   }
 
-  // --- NEW: Function to Pick Image ---
+  // --- UPDATED: Pick and Upload Image Immediately ---
   Future<void> _pickImage() async {
     try {
       final ImagePicker picker = ImagePicker();
       final XFile? image = await picker.pickImage(
-        source: ImageSource.gallery, 
-        maxWidth: 512, 
-        maxHeight: 512, 
-        imageQuality: 75
+        source: ImageSource.gallery,
+        maxWidth: 512,
+        maxHeight: 512,
+        imageQuality: 75,
       );
 
-      if (image != null) {
+      if (image == null) return;
+
+      // Show the image locally first
+      setState(() {
+        _selectedImage = File(image.path);
+        _isUploadingImage = true;
+      });
+
+      // Convert to base64
+      final bytes = await File(image.path).readAsBytes();
+      final base64Image = 'data:image/jpeg;base64,${base64Encode(bytes)}';
+
+      final user = _auth.currentUser;
+      if (user == null) {
+        _showSnackBar("User not logged in", Colors.red);
+        setState(() => _isUploadingImage = false);
+        return;
+      }
+
+      // Upload to Cloudinary
+      await setImage(
+        userId: user.uid,
+        fileBase64: base64Image,
+        oldPublicId: _photoPublicId, // Delete old image if exists
+      );
+
+      // Fetch updated user data to get new URL and public_id
+      final userDoc = await _firestore.collection('users').doc(user.uid).get();
+      final data = userDoc.data();
+
+      if (mounted) {
         setState(() {
-          _selectedImage = File(image.path);
+          _photoUrl = data?['image_url'];
+          _photoPublicId = data?['image_public_id'];
+          _selectedImage = null; // Clear local file
+          _isUploadingImage = false;
         });
+        _showSnackBar('Image uploaded successfully!', Colors.green);
       }
     } catch (e) {
-      debugPrint("Image Picker Error: $e");
-      _showSnackBar("Error picking image", Colors.red);
+      debugPrint("Image Upload Error: $e");
+      if (mounted) {
+        setState(() => _isUploadingImage = false);
+        _showSnackBar("Error uploading image: ${e.toString()}", Colors.red);
+      }
+    }
+  }
+
+  // --- NEW: Delete Profile Image ---
+  Future<void> _deleteImage() async {
+    if (_photoPublicId == null) {
+      _showSnackBar("No image to delete", Colors.orange);
+      return;
+    }
+
+    // Confirm deletion
+    final shouldDelete = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("Delete Profile Picture?"),
+        content: const Text("Are you sure you want to remove your profile picture?"),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text("CANCEL"),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text("DELETE", style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+
+    if (shouldDelete != true) return;
+
+    setState(() => _isUploadingImage = true);
+
+    try {
+      final user = _auth.currentUser;
+      if (user == null) {
+        _showSnackBar("User not logged in", Colors.red);
+        setState(() => _isUploadingImage = false);
+        return;
+      }
+
+      await deleteImage(userId: user.uid);
+
+      if (mounted) {
+        setState(() {
+          _photoUrl = null;
+          _photoPublicId = null;
+          _isUploadingImage = false;
+        });
+        _showSnackBar('Profile picture removed', Colors.green);
+      }
+    } catch (e) {
+      debugPrint("Image Delete Error: $e");
+      if (mounted) {
+        setState(() => _isUploadingImage = false);
+        _showSnackBar("Error deleting image: ${e.toString()}", Colors.red);
+      }
     }
   }
 
@@ -119,9 +225,12 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
           String street = props['street'] ?? '';
           String city = props['city'] ?? props['state'] ?? '';
           String country = props['country'] ?? '';
-          return [name, street, city, country]
-              .where((part) => part.isNotEmpty)
-              .join(', ');
+          return [
+            name,
+            street,
+            city,
+            country,
+          ].where((part) => part.isNotEmpty).join(', ');
         }).toList();
       }
     } catch (e) {
@@ -130,58 +239,170 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     return [];
   }
 
-  void _verifyPhoneNumber() {
+  Future<void> _verifyPhoneNumber() async {
     String number = _contactNumberController.text.trim();
     if (number.length != 10 || !number.startsWith('9')) {
-      _showSnackBar("Please enter a valid 10-digit number starting with 9", Colors.red);
+      _showSnackBar(
+        "Please enter a valid 10-digit number starting with 9",
+        Colors.red,
+      );
       return;
     }
 
+    String fullPhoneNumber = "+63$number";
+    setState(() => _isSendingOtp = true);
+
+    try {
+      final result = await sendOtp(phoneNumber: fullPhoneNumber);
+      setState(() => _isSendingOtp = false);
+
+      if (result['status'] == 'success') {
+        _showOtpVerificationDialog(fullPhoneNumber);
+      } else {
+        _showSnackBar(
+          result['message'] ?? 'Failed to send OTP. Please try again.',
+          Colors.red,
+        );
+      }
+    } catch (e) {
+      setState(() => _isSendingOtp = false);
+      debugPrint("Send OTP Error: $e");
+      _showSnackBar("Error sending OTP: ${e.toString()}", Colors.red);
+    }
+  }
+
+  void _showOtpVerificationDialog(String phoneNumber) {
     TextEditingController otpController = TextEditingController();
+    bool isVerifying = false;
+
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (context) => AlertDialog(
-        title: const Text("Verify Phone Number"),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text("A verification code has been sent to +63 $number"),
-            const SizedBox(height: 10),
-            const Text("Demo Code: 123456", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.blue)),
-            const SizedBox(height: 20),
-            TextField(
-              controller: otpController,
-              keyboardType: TextInputType.number,
-              inputFormatters: [LengthLimitingTextInputFormatter(6)],
-              decoration: const InputDecoration(
-                labelText: "Enter 6-digit OTP",
-                border: OutlineInputBorder(),
-              ),
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          return AlertDialog(
+            title: const Text("Verify Phone Number"),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text("A verification code has been sent to $phoneNumber"),
+                const SizedBox(height: 20),
+                TextField(
+                  controller: otpController,
+                  keyboardType: TextInputType.number,
+                  inputFormatters: [
+                    FilteringTextInputFormatter.digitsOnly,
+                    LengthLimitingTextInputFormatter(6),
+                  ],
+                  decoration: const InputDecoration(
+                    labelText: "Enter 6-digit OTP",
+                    border: OutlineInputBorder(),
+                    hintText: "000000",
+                  ),
+                  autofocus: true,
+                ),
+                const SizedBox(height: 10),
+                const Text(
+                  "Please check your SMS inbox",
+                  style: TextStyle(fontSize: 12, color: Colors.grey),
+                ),
+              ],
             ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text("CANCEL"),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              if (otpController.text == "123456") {
-                setState(() => _isPhoneVerified = true);
-                Navigator.pop(context);
-                _showSnackBar("Phone number verified!", Colors.green);
-              } else {
-                _showSnackBar("Invalid OTP", Colors.red);
-              }
-            },
-            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF2962FF)),
-            child: const Text("VERIFY", style: TextStyle(color: Colors.white)),
-          ),
-        ],
+            actions: [
+              TextButton(
+                onPressed: isVerifying ? null : () => Navigator.pop(context),
+                child: const Text("CANCEL"),
+              ),
+              ElevatedButton(
+                onPressed: isVerifying
+                    ? null
+                    : () async {
+                        String otpCode = otpController.text.trim();
+
+                        if (otpCode.length != 6) {
+                          _showSnackBar(
+                            "Please enter a 6-digit OTP",
+                            Colors.orange,
+                          );
+                          return;
+                        }
+
+                        setDialogState(() => isVerifying = true);
+
+                        try {
+                          final result = await verifyOtp(
+                            phoneNumber: phoneNumber,
+                            otp: otpCode,
+                          );
+
+                          if (result['status'] == 'success') {
+                            await _savePhoneVerification();
+                            setState(() => _isPhoneVerified = true);
+                            Navigator.pop(context);
+                            _showSnackBar(
+                              "Phone number verified successfully!",
+                              Colors.green,
+                            );
+                          } else {
+                            setDialogState(() => isVerifying = false);
+                            _showSnackBar(
+                              result['message'] ??
+                                  'Invalid OTP. Please try again.',
+                              Colors.red,
+                            );
+                          }
+                        } catch (e) {
+                          setDialogState(() => isVerifying = false);
+                          debugPrint("Verify OTP Error: $e");
+                          _showSnackBar(
+                            "Error verifying OTP: ${e.toString()}",
+                            Colors.red,
+                          );
+                        }
+                      },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF2962FF),
+                ),
+                child: isVerifying
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                          color: Colors.white,
+                          strokeWidth: 2,
+                        ),
+                      )
+                    : const Text(
+                        "VERIFY",
+                        style: TextStyle(color: Colors.white),
+                      ),
+              ),
+            ],
+          );
+        },
       ),
     );
+  }
+
+  Future<void> _savePhoneVerification() async {
+    try {
+      final user = _auth.currentUser;
+      if (user == null) return;
+
+      await _firestore.collection('users').doc(user.uid).update({
+        'contactNumber': "+63${_contactNumberController.text.trim()}",
+        'isPhoneVerified': true,
+        'phoneVerifiedAt': FieldValue.serverTimestamp(),
+      });
+
+      debugPrint("Phone verification saved to Firestore");
+    } catch (e) {
+      debugPrint("Error saving phone verification: $e");
+      _showSnackBar(
+        "Phone verified but failed to save. Please click Save Changes.",
+        Colors.orange,
+      );
+    }
   }
 
   String _getInitials() {
@@ -231,13 +452,19 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
           }
 
           _addressController.text = data['address'] ?? '';
-          _photoUrl = data['photoUrl'];
+          
+          // NEW: Load Cloudinary image data
+          _photoUrl = data['image_url'];
+          _photoPublicId = data['image_public_id'];
+          
           _signInProvider = data['signInProvider'];
-
           _isPhoneVerified = data['isPhoneVerified'] ?? false;
 
           final passwordField = data['password'];
-          _hasPassword = passwordField != null && passwordField is String && passwordField.isNotEmpty;
+          _hasPassword =
+              passwordField != null &&
+              passwordField is String &&
+              passwordField.isNotEmpty;
           _isLoading = false;
         });
       }
@@ -251,15 +478,31 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       showDialog(
         context: context,
         builder: (context) => AlertDialog(
-          title: const Text("Save Changes?", style: TextStyle(fontWeight: FontWeight.bold)),
+          title: const Text(
+            "Save Changes?",
+            style: TextStyle(fontWeight: FontWeight.bold),
+          ),
           content: const Text("Are you sure you want to update your profile?"),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+          ),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(context), child: const Text("CANCEL", style: TextStyle(color: Colors.grey))),
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text("CANCEL", style: TextStyle(color: Colors.grey)),
+            ),
             ElevatedButton(
-              onPressed: () { Navigator.pop(context); _performSave(); },
-              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF2962FF)),
-              child: const Text("CONFIRM", style: TextStyle(color: Colors.white)),
+              onPressed: () {
+                Navigator.pop(context);
+                _performSave();
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF2962FF),
+              ),
+              child: const Text(
+                "CONFIRM",
+                style: TextStyle(color: Colors.white),
+              ),
             ),
           ],
         ),
@@ -277,38 +520,16 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
 
       final Map<String, dynamic> updates = {};
 
-      // --- NEW: Upload Image if Selected ---
-      if (_selectedImage != null) {
-        try {
-          final String fileName = '${user.uid}_profile.jpg';
-          final Reference ref = _storage.ref().child('user_images').child(fileName);
-          
-          await ref.putFile(_selectedImage!);
-          final String downloadUrl = await ref.getDownloadURL();
-          
-          updates['photoUrl'] = downloadUrl;
-        } catch (e) {
-          debugPrint("Image upload failed: $e");
-          _showSnackBar("Failed to upload image, but saving text data.", Colors.orange);
-        }
-      }
-
+      // Image is already uploaded via _pickImage, so no need to upload here
       updates['displayName'] = _displayNameController.text.trim();
       updates['firstName'] = _firstNameController.text.trim();
       updates['lastName'] = _lastNameController.text.trim();
       updates['contactNumber'] = "+63${_contactNumberController.text.trim()}";
       updates['address'] = _addressController.text.trim();
       updates['updatedAt'] = FieldValue.serverTimestamp();
-      
       updates['isPhoneVerified'] = _isPhoneVerified;
 
       await _firestore.collection('users').doc(user.uid).update(updates);
-
-      // Update local state if we uploaded a photo so we don't show the FileImage next time
-      if (updates.containsKey('photoUrl')) {
-        _photoUrl = updates['photoUrl'];
-        _selectedImage = null; 
-      }
 
       if (mounted) {
         setState(() => _isSaving = false);
@@ -324,23 +545,34 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   }
 
   void _changePassword() {
-    showDialog(context: context, builder: (context) => _PasswordDialog(
+    showDialog(
+      context: context,
+      builder: (context) => _PasswordDialog(
         hasPassword: _hasPassword,
         signInProvider: _signInProvider,
         onPasswordChange: _performPasswordChange,
         onPasswordSet: _performSetPassword,
         showSnackBar: _showSnackBar,
-      ));
+      ),
+    );
   }
 
-  Future<void> _performPasswordChange(String currentPassword, String newPassword) async {
+  Future<void> _performPasswordChange(
+    String currentPassword,
+    String newPassword,
+  ) async {
     try {
       final user = _auth.currentUser;
       if (user == null || user.email == null) return;
-      final credential = EmailAuthProvider.credential(email: user.email!, password: currentPassword);
+      final credential = EmailAuthProvider.credential(
+        email: user.email!,
+        password: currentPassword,
+      );
       await user.reauthenticateWithCredential(credential);
       await user.updatePassword(newPassword);
-      await _firestore.collection('users').doc(user.uid).update({'password': newPassword});
+      await _firestore.collection('users').doc(user.uid).update({
+        'password': newPassword,
+      });
       if (mounted) setState(() => _hasPassword = true);
       _showSnackBar('Password changed successfully!', Colors.green);
     } on FirebaseAuthException catch (e) {
@@ -353,7 +585,9 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       final user = _auth.currentUser;
       if (user == null) return;
       await user.updatePassword(newPassword);
-      await _firestore.collection('users').doc(user.uid).update({'password': newPassword});
+      await _firestore.collection('users').doc(user.uid).update({
+        'password': newPassword,
+      });
       if (mounted) setState(() => _hasPassword = true);
       _showSnackBar('Password set successfully!', Colors.green);
     } on FirebaseAuthException catch (e) {
@@ -361,9 +595,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     }
   }
 
-  // --- UPDATED DEACTIVATION LOGIC ---
   void _deactivateAccount() {
-    // Reset selection
     _selectedDeactivationReason = null;
 
     showDialog(
@@ -371,7 +603,10 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       builder: (context) => StatefulBuilder(
         builder: (context, setDialogState) {
           return AlertDialog(
-            title: const Text("Deactivate Account", style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
+            title: const Text(
+              "Deactivate Account",
+              style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold),
+            ),
             content: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -385,11 +620,17 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                   decoration: const InputDecoration(
                     labelText: "Reason",
                     border: OutlineInputBorder(),
-                    contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                    contentPadding: EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 12,
+                    ),
                   ),
-                  initialValue: _selectedDeactivationReason,
+                  value: _selectedDeactivationReason,
                   items: _deactivationReasons.map((reason) {
-                    return DropdownMenuItem(value: reason, child: Text(reason, style: const TextStyle(fontSize: 14)));
+                    return DropdownMenuItem(
+                      value: reason,
+                      child: Text(reason, style: const TextStyle(fontSize: 14)),
+                    );
                   }).toList(),
                   onChanged: (val) {
                     setDialogState(() => _selectedDeactivationReason = val);
@@ -406,12 +647,19 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Icon(Icons.info_outline, color: Colors.orange.shade800, size: 20),
+                      Icon(
+                        Icons.info_outline,
+                        color: Colors.orange.shade800,
+                        size: 20,
+                      ),
                       const SizedBox(width: 10),
                       Expanded(
                         child: Text(
                           "Your account will be deactivated immediately. You can recover it by logging in within 30 days. After 30 days, your data will be permanently deleted.",
-                          style: TextStyle(fontSize: 12, color: Colors.orange.shade900),
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Colors.orange.shade900,
+                          ),
                         ),
                       ),
                     ],
@@ -422,17 +670,23 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
             actions: [
               TextButton(
                 onPressed: () => Navigator.pop(context),
-                child: const Text("CANCEL", style: TextStyle(color: Colors.grey)),
+                child: const Text(
+                  "CANCEL",
+                  style: TextStyle(color: Colors.grey),
+                ),
               ),
               ElevatedButton(
-                onPressed: _selectedDeactivationReason == null 
-                  ? null 
-                  : () {
-                      Navigator.pop(context);
-                      _performDeactivation();
-                    },
+                onPressed: _selectedDeactivationReason == null
+                    ? null
+                    : () {
+                        Navigator.pop(context);
+                        _performDeactivation();
+                      },
                 style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-                child: const Text("DEACTIVATE", style: TextStyle(color: Colors.white)),
+                child: const Text(
+                  "DEACTIVATE",
+                  style: TextStyle(color: Colors.white),
+                ),
               ),
             ],
           );
@@ -447,10 +701,8 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       final user = _auth.currentUser;
       if (user == null) return;
 
-      // Calculate 30 days from now
       DateTime scheduledDeletion = DateTime.now().add(const Duration(days: 30));
 
-      // Update Firestore: Do NOT delete, just flag as deactivated
       await _firestore.collection('users').doc(user.uid).update({
         'isDeactivated': true,
         'deactivationReason': _selectedDeactivationReason ?? "Unknown",
@@ -458,12 +710,13 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
         'scheduledDeletionDate': Timestamp.fromDate(scheduledDeletion),
       });
 
-      // Sign out the user
       await _auth.signOut();
 
       if (mounted) {
-        _showSnackBar('Account deactivated. You can recover it within 30 days.', Colors.orange);
-        // Pop all routes and go back to login (assuming login is the root)
+        _showSnackBar(
+          'Account deactivated. You can recover it within 30 days.',
+          Colors.orange,
+        );
         Navigator.of(context).popUntil((route) => route.isFirst);
       }
     } catch (e) {
@@ -476,12 +729,18 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
 
   void _showSnackBar(String message, Color color) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message), backgroundColor: color));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), backgroundColor: color),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_isLoading) return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    if (_isLoading) {
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
 
     return Scaffold(
       backgroundColor: const Color(0xFFF8F9FB),
@@ -495,70 +754,155 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
               children: [
                 Row(
                   children: [
-                    IconButton(icon: const Icon(Icons.arrow_back), onPressed: () => Navigator.pop(context), padding: EdgeInsets.zero, constraints: const BoxConstraints()),
+                    IconButton(
+                      icon: const Icon(Icons.arrow_back),
+                      onPressed: () => Navigator.pop(context),
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(),
+                    ),
                     const SizedBox(width: 12),
-                    const Text("Back", style: TextStyle(fontSize: 16, fontWeight: FontWeight.w500)),
+                    const Text(
+                      "Back",
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
                   ],
                 ),
                 const SizedBox(height: 20),
-                const Text("Account", style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
-                const Text("Manage Account", style: TextStyle(fontSize: 14, color: Colors.grey)),
+                const Text(
+                  "Account",
+                  style: TextStyle(
+                    fontSize: 28,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF1E2339),
+                  ),
+                ),
+                const Text(
+                  "Manage Account",
+                  style: TextStyle(fontSize: 14, color: Colors.grey),
+                ),
                 const SizedBox(height: 30),
 
                 // --- UPDATED PROFILE PICTURE SECTION ---
                 Center(
-                  child: GestureDetector(
-                    onTap: _pickImage, // Allow tapping to change image
-                    child: Stack(
-                      children: [
-                        Container(
-                          width: 100, height: 100,
+                  child: Stack(
+                    children: [
+                      GestureDetector(
+                        onTap: _isUploadingImage ? null : _pickImage,
+                        child: Container(
+                          width: 100,
+                          height: 100,
                           decoration: BoxDecoration(
-                            color: const Color(0xFF2962FF), 
-                            shape: BoxShape.circle, 
-                            boxShadow: [BoxShadow(color: const Color(0xFF2962FF).withOpacity(0.3), blurRadius: 15, offset: const Offset(0, 5))],
-                            // 1. Show Local Image if picked
+                            color: const Color(0xFF2962FF),
+                            shape: BoxShape.circle,
+                            boxShadow: [
+                              BoxShadow(
+                                color: const Color(0xFF2962FF).withOpacity(0.3),
+                                blurRadius: 15,
+                                offset: const Offset(0, 5),
+                              ),
+                            ],
                             image: _selectedImage != null
-                              ? DecorationImage(image: FileImage(_selectedImage!), fit: BoxFit.cover)
-                              : (_photoUrl != null && _photoUrl!.isNotEmpty
-                                  // 2. Show Online Image if available
-                                  ? DecorationImage(image: NetworkImage(_photoUrl!), fit: BoxFit.cover)
-                                  : null),
+                                ? DecorationImage(
+                                    image: FileImage(_selectedImage!),
+                                    fit: BoxFit.cover,
+                                  )
+                                : (_photoUrl != null && _photoUrl!.isNotEmpty
+                                      ? DecorationImage(
+                                          image: NetworkImage(_photoUrl!),
+                                          fit: BoxFit.cover,
+                                        )
+                                      : null),
                           ),
                           alignment: Alignment.center,
-                          // 3. Fallback to Initials ONLY if no local image AND no online image
-                          child: (_selectedImage == null && (_photoUrl == null || _photoUrl!.isEmpty))
-                              ? Text(_getInitials(), style: const TextStyle(fontSize: 36, fontWeight: FontWeight.bold, color: Colors.white, letterSpacing: 2))
-                              : null,
+                          child: _isUploadingImage
+                              ? const CircularProgressIndicator(
+                                  color: Colors.white,
+                                  strokeWidth: 3,
+                                )
+                              : (_selectedImage == null &&
+                                      (_photoUrl == null || _photoUrl!.isEmpty))
+                                  ? Text(
+                                      _getInitials(),
+                                      style: const TextStyle(
+                                        fontSize: 36,
+                                        fontWeight: FontWeight.bold,
+                                        color: Colors.white,
+                                        letterSpacing: 2,
+                                      ),
+                                    )
+                                  : null,
                         ),
-                        // Camera Icon Overlay
-                        Positioned(
-                          bottom: 0,
-                          right: 0,
+                      ),
+                      
+                      // Camera Icon (Upload)
+                      Positioned(
+                        bottom: 0,
+                        right: 0,
+                        child: GestureDetector(
+                          onTap: _isUploadingImage ? null : _pickImage,
                           child: Container(
                             padding: const EdgeInsets.all(6),
                             decoration: const BoxDecoration(
                               color: Colors.white,
                               shape: BoxShape.circle,
-                              boxShadow: [BoxShadow(color: Colors.black26, blurRadius: 4)],
+                              boxShadow: [
+                                BoxShadow(color: Colors.black26, blurRadius: 4),
+                              ],
                             ),
-                            child: const Icon(Icons.camera_alt, size: 20, color: Color(0xFF2962FF)),
+                            child: const Icon(
+                              Icons.camera_alt,
+                              size: 20,
+                              color: Color(0xFF2962FF),
+                            ),
                           ),
                         ),
-                      ],
-                    ),
+                      ),
+                      
+                      // Delete Icon (Only show if image exists)
+                      if (_photoUrl != null && _photoUrl!.isNotEmpty)
+                        Positioned(
+                          top: 0,
+                          right: 0,
+                          child: GestureDetector(
+                            onTap: _isUploadingImage ? null : _deleteImage,
+                            child: Container(
+                              padding: const EdgeInsets.all(6),
+                              decoration: const BoxDecoration(
+                                color: Colors.red,
+                                shape: BoxShape.circle,
+                                boxShadow: [
+                                  BoxShadow(color: Colors.black26, blurRadius: 4),
+                                ],
+                              ),
+                              child: const Icon(
+                                Icons.close,
+                                size: 16,
+                                color: Colors.white,
+                              ),
+                            ),
+                          ),
+                        ),
+                    ],
                   ),
                 ),
                 const SizedBox(height: 30),
 
-                const Text("Personal Information", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                const Text(
+                  "Personal Information",
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                ),
                 const SizedBox(height: 20),
 
                 _buildTextField(
                   "DISPLAY NAME",
                   _displayNameController,
                   validator: (val) {
-                    if (val == null || val.trim().isEmpty) return "Cannot be empty";
+                    if (val == null || val.trim().isEmpty) {
+                      return "Cannot be empty";
+                    }
                     if (val.length < 3) return "Too short (min 3 chars)";
                     if (val.length > 25) return "Too long (max 25 chars)";
                     return null;
@@ -573,14 +917,18 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                         "FIRST NAME",
                         _firstNameController,
                         inputFormatters: [
-                          FilteringTextInputFormatter.allow(RegExp(r'[a-zA-Z .-]')),
+                          FilteringTextInputFormatter.allow(
+                            RegExp(r'[a-zA-Z .-]'),
+                          ),
                         ],
                         validator: (val) {
-                          if (val == null || val.trim().isEmpty) return "Required";
+                          if (val == null || val.trim().isEmpty) {
+                            return "Required";
+                          }
                           if (val.length < 2) return "Too short";
                           return null;
-                        }
-                      )
+                        },
+                      ),
                     ),
                     const SizedBox(width: 16),
                     Expanded(
@@ -588,14 +936,18 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                         "LAST NAME",
                         _lastNameController,
                         inputFormatters: [
-                          FilteringTextInputFormatter.allow(RegExp(r'[a-zA-Z .-]')),
+                          FilteringTextInputFormatter.allow(
+                            RegExp(r'[a-zA-Z .-]'),
+                          ),
                         ],
                         validator: (val) {
-                          if (val == null || val.trim().isEmpty) return "Required";
+                          if (val == null || val.trim().isEmpty) {
+                            return "Required";
+                          }
                           if (val.length < 2) return "Too short";
                           return null;
-                        }
-                      )
+                        },
+                      ),
                     ),
                   ],
                 ),
@@ -604,7 +956,14 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text("PHONE NUMBER", style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF5A6175))),
+                    const Text(
+                      "PHONE NUMBER",
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF5A6175),
+                      ),
+                    ),
                     const SizedBox(height: 8),
                     Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -612,29 +971,87 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                         Container(
                           height: 55,
                           padding: const EdgeInsets.symmetric(horizontal: 12),
-                          decoration: BoxDecoration(color: Colors.grey.shade100, borderRadius: BorderRadius.circular(12), border: Border.all(color: Colors.black87, width: 1.0)),
-                          child: const Center(child: Text("+63", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.black54))),
+                          decoration: BoxDecoration(
+                            color: Colors.grey.shade100,
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                              color: Colors.black87,
+                              width: 1.0,
+                            ),
+                          ),
+                          child: const Center(
+                            child: Text(
+                              "+63",
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 16,
+                                color: Colors.black54,
+                              ),
+                            ),
+                          ),
                         ),
                         const SizedBox(width: 10),
                         Expanded(
                           child: TextFormField(
                             controller: _contactNumberController,
                             keyboardType: TextInputType.phone,
-                            inputFormatters: [FilteringTextInputFormatter.digitsOnly, LengthLimitingTextInputFormatter(10)],
-                            autovalidateMode: AutovalidateMode.onUserInteraction,
-                            style: const TextStyle(fontWeight: FontWeight.w500, fontSize: 15),
+                            inputFormatters: [
+                              FilteringTextInputFormatter.digitsOnly,
+                              LengthLimitingTextInputFormatter(10),
+                            ],
+                            autovalidateMode:
+                                AutovalidateMode.onUserInteraction,
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w500,
+                              fontSize: 15,
+                            ),
                             decoration: InputDecoration(
-                              hintText: "9XX XXX XXXX", filled: true, fillColor: Colors.white,
-                              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
-                              enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Colors.black87, width: 1.5)),
-                              focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Color(0xFF2962FF), width: 2)),
-                              errorBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Colors.red, width: 1.5)),
-                              focusedErrorBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Colors.red, width: 2)),
+                              hintText: "9XX XXX XXXX",
+                              filled: true,
+                              fillColor: Colors.white,
+                              contentPadding: const EdgeInsets.symmetric(
+                                horizontal: 16,
+                                vertical: 16,
+                              ),
+                              enabledBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(12),
+                                borderSide: const BorderSide(
+                                  color: Colors.black87,
+                                  width: 1.5,
+                                ),
+                              ),
+                              focusedBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(12),
+                                borderSide: const BorderSide(
+                                  color: Color(0xFF2962FF),
+                                  width: 2,
+                                ),
+                              ),
+                              errorBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(12),
+                                borderSide: const BorderSide(
+                                  color: Colors.red,
+                                  width: 1.5,
+                                ),
+                              ),
+                              focusedErrorBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(12),
+                                borderSide: const BorderSide(
+                                  color: Colors.red,
+                                  width: 2,
+                                ),
+                              ),
                             ),
                             validator: (value) {
-                              if (value == null || value.isEmpty) return "Required";
-                              if (!value.startsWith('9')) return "Must start with 9";
-                              if (value.length != 10) return "Must be 10 digits";
+                              if (value == null || value.isEmpty) {
+                                return "Required";
+                              }
+                              if (!value.startsWith('9')) {
+                                return "Must start with 9";
+                              }
+                              if (value.length != 10) {
+                                return "Must be 10 digits";
+                              }
                               return null;
                             },
                           ),
@@ -644,30 +1061,67 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                           height: 55,
                           alignment: Alignment.center,
                           child: _isPhoneVerified
-                            ? const Icon(Icons.check_circle, color: Colors.green, size: 30)
-                            : TextButton(
-                                onPressed: _verifyPhoneNumber,
-                                style: TextButton.styleFrom(
-                                  backgroundColor: const Color(0xFFE3F2FD),
-                                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                              ? const Icon(
+                                  Icons.check_circle,
+                                  color: Colors.green,
+                                  size: 30,
+                                )
+                              : TextButton(
+                                  onPressed: _isSendingOtp
+                                      ? null
+                                      : _verifyPhoneNumber,
+                                  style: TextButton.styleFrom(
+                                    backgroundColor: const Color(0xFFE3F2FD),
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 12,
+                                      vertical: 12,
+                                    ),
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                  ),
+                                  child: _isSendingOtp
+                                      ? const SizedBox(
+                                          width: 20,
+                                          height: 20,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2,
+                                            valueColor:
+                                                AlwaysStoppedAnimation<Color>(
+                                                  Color(0xFF2962FF),
+                                                ),
+                                          ),
+                                        )
+                                      : const Text(
+                                          "Verify",
+                                          style: TextStyle(
+                                            color: Color(0xFF2962FF),
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
                                 ),
-                                child: const Text("Verify", style: TextStyle(color: Color(0xFF2962FF), fontWeight: FontWeight.bold)),
-                              ),
                         ),
                       ],
                     ),
-                    
+
                     if (!_isPhoneVerified) ...[
                       const SizedBox(height: 8),
                       Row(
                         children: [
-                          Icon(Icons.warning_amber_rounded, color: Colors.orange.shade700, size: 16),
+                          Icon(
+                            Icons.warning_amber_rounded,
+                            color: Colors.orange.shade700,
+                            size: 16,
+                          ),
                           const SizedBox(width: 5),
                           Expanded(
                             child: Text(
                               "Phone number not verified. Tap 'Verify' to secure your account.",
-                              style: TextStyle(color: Colors.orange.shade700, fontSize: 12, fontWeight: FontWeight.bold),
+                              style: TextStyle(
+                                color: Colors.orange.shade700,
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                              ),
                             ),
                           ),
                         ],
@@ -681,45 +1135,91 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text("STREET ADDRESS", style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF5A6175))),
+                    const Text(
+                      "STREET ADDRESS",
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF5A6175),
+                      ),
+                    ),
                     const SizedBox(height: 8),
                     Autocomplete<String>(
-                      optionsBuilder: (TextEditingValue textEditingValue) async {
-                        if (textEditingValue.text.isEmpty) return const Iterable<String>.empty();
-                        return await _fetchAddressSuggestions(textEditingValue.text);
-                      },
+                      optionsBuilder:
+                          (TextEditingValue textEditingValue) async {
+                            if (textEditingValue.text.isEmpty) {
+                              return const Iterable<String>.empty();
+                            }
+                            return await _fetchAddressSuggestions(
+                              textEditingValue.text,
+                            );
+                          },
                       onSelected: (String selection) {
                         _addressController.text = selection;
                       },
-                      fieldViewBuilder: (context, controller, focusNode, onEditingComplete) {
-                        if (controller.text != _addressController.text) {
-                          controller.text = _addressController.text;
-                        }
-                        controller.addListener(() {
-                          _addressController.text = controller.text;
-                        });
+                      fieldViewBuilder:
+                          (context, controller, focusNode, onEditingComplete) {
+                            if (controller.text != _addressController.text) {
+                              controller.text = _addressController.text;
+                            }
+                            controller.addListener(() {
+                              _addressController.text = controller.text;
+                            });
 
-                        return TextFormField(
-                          controller: controller,
-                          focusNode: focusNode,
-                          onEditingComplete: onEditingComplete,
-                          validator: (val) {
-                            if (val == null || val.trim().isEmpty) return "Required";
-                            if (val.length < 5) return "Invalid address";
-                            return null;
+                            return TextFormField(
+                              controller: controller,
+                              focusNode: focusNode,
+                              onEditingComplete: onEditingComplete,
+                              validator: (val) {
+                                if (val == null || val.trim().isEmpty) {
+                                  return "Required";
+                                }
+                                if (val.length < 5) return "Invalid address";
+                                return null;
+                              },
+                              decoration: InputDecoration(
+                                filled: true,
+                                fillColor: Colors.white,
+                                hintText: "Search address...",
+                                suffixIcon: const Icon(
+                                  Icons.location_on_outlined,
+                                  color: Colors.grey,
+                                ),
+                                contentPadding: const EdgeInsets.symmetric(
+                                  horizontal: 16,
+                                  vertical: 16,
+                                ),
+                                enabledBorder: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                  borderSide: const BorderSide(
+                                    color: Colors.black87,
+                                    width: 1.5,
+                                  ),
+                                ),
+                                focusedBorder: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                  borderSide: const BorderSide(
+                                    color: Color(0xFF2962FF),
+                                    width: 2,
+                                  ),
+                                ),
+                                errorBorder: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                  borderSide: const BorderSide(
+                                    color: Colors.red,
+                                    width: 1.5,
+                                  ),
+                                ),
+                                focusedErrorBorder: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                  borderSide: const BorderSide(
+                                    color: Colors.red,
+                                    width: 2,
+                                  ),
+                                ),
+                              ),
+                            );
                           },
-                          decoration: InputDecoration(
-                            filled: true, fillColor: Colors.white,
-                            hintText: "Search address...",
-                            suffixIcon: const Icon(Icons.location_on_outlined, color: Colors.grey),
-                            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
-                            enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Colors.black87, width: 1.5)),
-                            focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Color(0xFF2962FF), width: 2)),
-                            errorBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Colors.red, width: 1.5)),
-                            focusedErrorBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Colors.red, width: 2)),
-                          ),
-                        );
-                      },
                       optionsViewBuilder: (context, onSelected, options) {
                         return Align(
                           alignment: Alignment.topLeft,
@@ -728,17 +1228,26 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                             borderRadius: BorderRadius.circular(12),
                             child: Container(
                               width: MediaQuery.of(context).size.width - 48,
-                              decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12)),
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(12),
+                              ),
                               constraints: const BoxConstraints(maxHeight: 250),
                               child: ListView.separated(
                                 padding: EdgeInsets.zero,
                                 shrinkWrap: true,
                                 itemCount: options.length,
-                                separatorBuilder: (ctx, i) => const Divider(height: 1),
+                                separatorBuilder: (ctx, i) =>
+                                    const Divider(height: 1),
                                 itemBuilder: (BuildContext context, int index) {
-                                  final String option = options.elementAt(index);
+                                  final String option = options.elementAt(
+                                    index,
+                                  );
                                   return ListTile(
-                                    title: Text(option, style: const TextStyle(fontSize: 14)),
+                                    title: Text(
+                                      option,
+                                      style: const TextStyle(fontSize: 14),
+                                    ),
                                     onTap: () => onSelected(option),
                                   );
                                 },
@@ -752,28 +1261,57 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                 ),
 
                 const SizedBox(height: 30),
-                const Text("Security", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                const Text(
+                  "Security",
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                ),
                 const SizedBox(height: 10),
                 SizedBox(
-                  width: double.infinity, height: 50,
+                  width: double.infinity,
+                  height: 50,
                   child: OutlinedButton.icon(
                     onPressed: _changePassword,
-                    icon: Icon(_hasPassword ? Icons.lock_outline : Icons.lock_open_outlined, size: 20),
-                    label: Text(_hasPassword ? "CHANGE PASSWORD" : "SET PASSWORD"),
+                    icon: Icon(
+                      _hasPassword
+                          ? Icons.lock_outline
+                          : Icons.lock_open_outlined,
+                      size: 20,
+                    ),
+                    label: Text(
+                      _hasPassword ? "CHANGE PASSWORD" : "SET PASSWORD",
+                    ),
                   ),
                 ),
                 const SizedBox(height: 40),
                 SizedBox(
-                  width: double.infinity, height: 55,
+                  width: double.infinity,
+                  height: 55,
                   child: ElevatedButton(
                     onPressed: _isSaving ? null : _onSavePressed,
-                    style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF2962FF)),
-                    child: _isSaving ? const CircularProgressIndicator(color: Colors.white) : const Text("SAVE CHANGES", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF2962FF),
+                    ),
+                    child: _isSaving
+                        ? const CircularProgressIndicator(color: Colors.white)
+                        : const Text(
+                            "SAVE CHANGES",
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
                   ),
                 ),
                 const SizedBox(height: 20),
-                // UPDATED: Deactivate Button
-                Center(child: TextButton(onPressed: _deactivateAccount, child: const Text("Deactivate Account", style: TextStyle(color: Colors.red)))),
+                Center(
+                  child: TextButton(
+                    onPressed: _deactivateAccount,
+                    child: const Text(
+                      "Deactivate Account",
+                      style: TextStyle(color: Colors.red),
+                    ),
+                  ),
+                ),
                 const SizedBox(height: 20),
               ],
             ),
@@ -785,16 +1323,21 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
 
   Widget _buildTextField(
     String label,
-    TextEditingController controller,
-    {
-      String? Function(String?)? validator,
-      List<TextInputFormatter>? inputFormatters,
-    }
-  ) {
+    TextEditingController controller, {
+    String? Function(String?)? validator,
+    List<TextInputFormatter>? inputFormatters,
+  }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(label.toUpperCase(), style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF5A6175))),
+        Text(
+          label.toUpperCase(),
+          style: const TextStyle(
+            fontSize: 11,
+            fontWeight: FontWeight.bold,
+            color: Color(0xFF5A6175),
+          ),
+        ),
         const SizedBox(height: 8),
         TextFormField(
           controller: controller,
@@ -802,12 +1345,28 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
           inputFormatters: inputFormatters,
           autovalidateMode: AutovalidateMode.onUserInteraction,
           decoration: InputDecoration(
-            filled: true, fillColor: Colors.white,
-            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
-            enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Colors.black87, width: 1.5)),
-            focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Color(0xFF2962FF), width: 2)),
-            errorBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Colors.red, width: 1.5)),
-            focusedErrorBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Colors.red, width: 2)),
+            filled: true,
+            fillColor: Colors.white,
+            contentPadding: const EdgeInsets.symmetric(
+              horizontal: 16,
+              vertical: 16,
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: const BorderSide(color: Colors.black87, width: 1.5),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: const BorderSide(color: Color(0xFF2962FF), width: 2),
+            ),
+            errorBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: const BorderSide(color: Colors.red, width: 1.5),
+            ),
+            focusedErrorBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: const BorderSide(color: Colors.red, width: 2),
+            ),
           ),
         ),
       ],
@@ -815,7 +1374,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   }
 }
 
-// ========== PASSWORD DIALOG WITH ENHANCED VALIDATION ==========
+// ========== PASSWORD DIALOG ==========
 class _PasswordDialog extends StatefulWidget {
   final bool hasPassword;
   final String? signInProvider;
@@ -828,7 +1387,7 @@ class _PasswordDialog extends StatefulWidget {
     required this.signInProvider,
     required this.onPasswordChange,
     required this.onPasswordSet,
-    required this.showSnackBar
+    required this.showSnackBar,
   });
 
   @override
@@ -840,12 +1399,11 @@ class _PasswordDialogState extends State<_PasswordDialog> {
   final _currentController = TextEditingController();
   final _newController = TextEditingController();
   final _confirmController = TextEditingController();
-  
+
   bool _obsCurrent = true;
   bool _obsNew = true;
   bool _obsConfirm = true;
 
-  // Live validation states
   bool _hasMinLength = false;
   bool _hasMaxLength = true;
   bool _hasUppercase = false;
@@ -899,10 +1457,6 @@ class _PasswordDialogState extends State<_PasswordDialog> {
     return null;
   }
 
-  bool get _isPasswordValid {
-    return _hasMinLength && _hasMaxLength && _hasUppercase && _hasDigit && _hasSpecialChar;
-  }
-
   Widget _buildValidationIndicator(String label, bool isValid) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 2),
@@ -940,7 +1494,6 @@ class _PasswordDialogState extends State<_PasswordDialog> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // Current Password (only for password change)
               if (widget.hasPassword) ...[
                 TextFormField(
                   controller: _currentController,
@@ -949,8 +1502,11 @@ class _PasswordDialogState extends State<_PasswordDialog> {
                     labelText: "Current Password",
                     border: const OutlineInputBorder(),
                     suffixIcon: IconButton(
-                      icon: Icon(_obsCurrent ? Icons.visibility_off : Icons.visibility),
-                      onPressed: () => setState(() => _obsCurrent = !_obsCurrent),
+                      icon: Icon(
+                        _obsCurrent ? Icons.visibility_off : Icons.visibility,
+                      ),
+                      onPressed: () =>
+                          setState(() => _obsCurrent = !_obsCurrent),
                     ),
                   ),
                   validator: (v) => v == null || v.isEmpty ? "Required" : null,
@@ -958,7 +1514,6 @@ class _PasswordDialogState extends State<_PasswordDialog> {
                 const SizedBox(height: 16),
               ],
 
-              // New Password
               TextFormField(
                 controller: _newController,
                 obscureText: _obsNew,
@@ -967,25 +1522,25 @@ class _PasswordDialogState extends State<_PasswordDialog> {
                   labelText: "New Password",
                   border: const OutlineInputBorder(),
                   suffixIcon: IconButton(
-                    icon: Icon(_obsNew ? Icons.visibility_off : Icons.visibility),
+                    icon: Icon(
+                      _obsNew ? Icons.visibility_off : Icons.visibility,
+                    ),
                     onPressed: () => setState(() => _obsNew = !_obsNew),
                   ),
                 ),
                 validator: (value) {
                   final baseValidation = _validatePassword(value);
                   if (baseValidation != null) return baseValidation;
-                  
-                  // Check if new password equals current password (for change password only)
+
                   if (widget.hasPassword && value == _currentController.text) {
                     return 'New password must be different from current password';
                   }
-                  
+
                   return null;
                 },
               ),
               const SizedBox(height: 8),
-              
-              // Password Requirements Label
+
               const Text(
                 "Password must contain:",
                 style: TextStyle(
@@ -995,16 +1550,23 @@ class _PasswordDialogState extends State<_PasswordDialog> {
                 ),
               ),
               const SizedBox(height: 6),
-              
-              // Live Validation Indicators
-              _buildValidationIndicator("8-50 characters", _hasMinLength && _hasMaxLength),
-              _buildValidationIndicator("At least 1 uppercase letter (A-Z)", _hasUppercase),
+
+              _buildValidationIndicator(
+                "8-50 characters",
+                _hasMinLength && _hasMaxLength,
+              ),
+              _buildValidationIndicator(
+                "At least 1 uppercase letter (A-Z)",
+                _hasUppercase,
+              ),
               _buildValidationIndicator("At least 1 digit (0-9)", _hasDigit),
-              _buildValidationIndicator("At least 1 special character (!@#\$%^&*)", _hasSpecialChar),
-              
+              _buildValidationIndicator(
+                "At least 1 special character (!@#\$%^&*)",
+                _hasSpecialChar,
+              ),
+
               const SizedBox(height: 16),
 
-              // Confirm Password
               TextFormField(
                 controller: _confirmController,
                 obscureText: _obsConfirm,
@@ -1013,7 +1575,9 @@ class _PasswordDialogState extends State<_PasswordDialog> {
                   labelText: "Confirm Password",
                   border: const OutlineInputBorder(),
                   suffixIcon: IconButton(
-                    icon: Icon(_obsConfirm ? Icons.visibility_off : Icons.visibility),
+                    icon: Icon(
+                      _obsConfirm ? Icons.visibility_off : Icons.visibility,
+                    ),
                     onPressed: () => setState(() => _obsConfirm = !_obsConfirm),
                   ),
                 ),
@@ -1037,7 +1601,10 @@ class _PasswordDialogState extends State<_PasswordDialog> {
             if (_formKey.currentState!.validate()) {
               Navigator.pop(context);
               if (widget.hasPassword) {
-                widget.onPasswordChange(_currentController.text, _newController.text);
+                widget.onPasswordChange(
+                  _currentController.text,
+                  _newController.text,
+                );
               } else {
                 widget.onPasswordSet(_newController.text);
               }
