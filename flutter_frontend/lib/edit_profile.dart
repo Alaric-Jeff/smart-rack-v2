@@ -2,13 +2,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_storage/firebase_storage.dart';
 import 'package:image_picker/image_picker.dart';
 import 'dart:io';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import './sms/send_otp.dart';
 import './sms/verify_otp.dart';
+import './cloudinary/setImage.dart';
+import './cloudinary/deleteImage.dart';
 
 class EditProfileScreen extends StatefulWidget {
   const EditProfileScreen({super.key});
@@ -21,7 +22,8 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   final _formKey = GlobalKey<FormState>();
   bool _isLoading = true;
   bool _isSaving = false;
-  bool _isSendingOtp = false; // NEW: Track OTP sending state
+  bool _isSendingOtp = false;
+  bool _isUploadingImage = false; // NEW: Track image upload state
 
   bool _isPhoneVerified = false;
 
@@ -32,13 +34,13 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   late TextEditingController _addressController;
 
   String? _photoUrl;
+  String? _photoPublicId; // NEW: Store Cloudinary public_id
   File? _selectedImage;
   bool _hasPassword = false;
   String? _signInProvider;
 
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  final FirebaseStorage _storage = FirebaseStorage.instance;
 
   // --- Deactivation Variables ---
   String? _selectedDeactivationReason;
@@ -90,6 +92,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     super.dispose();
   }
 
+  // --- UPDATED: Pick and Upload Image Immediately ---
   Future<void> _pickImage() async {
     try {
       final ImagePicker picker = ImagePicker();
@@ -100,14 +103,109 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
         imageQuality: 75,
       );
 
-      if (image != null) {
+      if (image == null) return;
+
+      // Show the image locally first
+      setState(() {
+        _selectedImage = File(image.path);
+        _isUploadingImage = true;
+      });
+
+      // Convert to base64
+      final bytes = await File(image.path).readAsBytes();
+      final base64Image = 'data:image/jpeg;base64,${base64Encode(bytes)}';
+
+      final user = _auth.currentUser;
+      if (user == null) {
+        _showSnackBar("User not logged in", Colors.red);
+        setState(() => _isUploadingImage = false);
+        return;
+      }
+
+      // Upload to Cloudinary
+      await setImage(
+        userId: user.uid,
+        fileBase64: base64Image,
+        oldPublicId: _photoPublicId, // Delete old image if exists
+      );
+
+      // Fetch updated user data to get new URL and public_id
+      final userDoc = await _firestore.collection('users').doc(user.uid).get();
+      final data = userDoc.data();
+
+      if (mounted) {
         setState(() {
-          _selectedImage = File(image.path);
+          _photoUrl = data?['image_url'];
+          _photoPublicId = data?['image_public_id'];
+          _selectedImage = null; // Clear local file
+          _isUploadingImage = false;
         });
+        _showSnackBar('Image uploaded successfully!', Colors.green);
       }
     } catch (e) {
-      debugPrint("Image Picker Error: $e");
-      _showSnackBar("Error picking image", Colors.red);
+      debugPrint("Image Upload Error: $e");
+      if (mounted) {
+        setState(() => _isUploadingImage = false);
+        _showSnackBar("Error uploading image: ${e.toString()}", Colors.red);
+      }
+    }
+  }
+
+  // --- NEW: Delete Profile Image ---
+  Future<void> _deleteImage() async {
+    if (_photoPublicId == null) {
+      _showSnackBar("No image to delete", Colors.orange);
+      return;
+    }
+
+    // Confirm deletion
+    final shouldDelete = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("Delete Profile Picture?"),
+        content: const Text("Are you sure you want to remove your profile picture?"),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text("CANCEL"),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text("DELETE", style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+
+    if (shouldDelete != true) return;
+
+    setState(() => _isUploadingImage = true);
+
+    try {
+      final user = _auth.currentUser;
+      if (user == null) {
+        _showSnackBar("User not logged in", Colors.red);
+        setState(() => _isUploadingImage = false);
+        return;
+      }
+
+      await deleteImage(userId: user.uid);
+
+      if (mounted) {
+        setState(() {
+          _photoUrl = null;
+          _photoPublicId = null;
+          _isUploadingImage = false;
+        });
+        _showSnackBar('Profile picture removed', Colors.green);
+      }
+    } catch (e) {
+      debugPrint("Image Delete Error: $e");
+      if (mounted) {
+        setState(() => _isUploadingImage = false);
+        _showSnackBar("Error deleting image: ${e.toString()}", Colors.red);
+      }
     }
   }
 
@@ -141,7 +239,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     return [];
   }
 
-  // --- UPDATED: Real SMS OTP Verification ---
   Future<void> _verifyPhoneNumber() async {
     String number = _contactNumberController.text.trim();
     if (number.length != 10 || !number.startsWith('9')) {
@@ -152,23 +249,16 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       return;
     }
 
-    // Format phone number for Philippines (+63)
     String fullPhoneNumber = "+63$number";
-
-    // Show loading indicator
     setState(() => _isSendingOtp = true);
 
     try {
-      // Call the sendOtp function
       final result = await sendOtp(phoneNumber: fullPhoneNumber);
-
       setState(() => _isSendingOtp = false);
 
       if (result['status'] == 'success') {
-        // OTP sent successfully, show verification dialog
         _showOtpVerificationDialog(fullPhoneNumber);
       } else {
-        // Failed to send OTP
         _showSnackBar(
           result['message'] ?? 'Failed to send OTP. Please try again.',
           Colors.red,
@@ -240,17 +330,13 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                         setDialogState(() => isVerifying = true);
 
                         try {
-                          // Call verifyOtp function
                           final result = await verifyOtp(
                             phoneNumber: phoneNumber,
                             otp: otpCode,
                           );
 
                           if (result['status'] == 'success') {
-                            // OTP verified successfully
-                            // SAVE TO FIRESTORE IMMEDIATELY
                             await _savePhoneVerification();
-
                             setState(() => _isPhoneVerified = true);
                             Navigator.pop(context);
                             _showSnackBar(
@@ -258,7 +344,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                               Colors.green,
                             );
                           } else {
-                            // Verification failed
                             setDialogState(() => isVerifying = false);
                             _showSnackBar(
                               result['message'] ??
@@ -299,13 +384,11 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     );
   }
 
-  // ADD THIS NEW METHOD
   Future<void> _savePhoneVerification() async {
     try {
       final user = _auth.currentUser;
       if (user == null) return;
 
-      // Save the verified phone number and verification status to Firestore
       await _firestore.collection('users').doc(user.uid).update({
         'contactNumber': "+63${_contactNumberController.text.trim()}",
         'isPhoneVerified': true,
@@ -369,9 +452,12 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
           }
 
           _addressController.text = data['address'] ?? '';
-          _photoUrl = data['photoUrl'];
+          
+          // NEW: Load Cloudinary image data
+          _photoUrl = data['image_url'];
+          _photoPublicId = data['image_public_id'];
+          
           _signInProvider = data['signInProvider'];
-
           _isPhoneVerified = data['isPhoneVerified'] ?? false;
 
           final passwordField = data['password'];
@@ -434,42 +520,16 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
 
       final Map<String, dynamic> updates = {};
 
-      if (_selectedImage != null) {
-        try {
-          final String fileName = '${user.uid}_profile.jpg';
-          final Reference ref = _storage
-              .ref()
-              .child('user_images')
-              .child(fileName);
-
-          await ref.putFile(_selectedImage!);
-          final String downloadUrl = await ref.getDownloadURL();
-
-          updates['photoUrl'] = downloadUrl;
-        } catch (e) {
-          debugPrint("Image upload failed: $e");
-          _showSnackBar(
-            "Failed to upload image, but saving text data.",
-            Colors.orange,
-          );
-        }
-      }
-
+      // Image is already uploaded via _pickImage, so no need to upload here
       updates['displayName'] = _displayNameController.text.trim();
       updates['firstName'] = _firstNameController.text.trim();
       updates['lastName'] = _lastNameController.text.trim();
       updates['contactNumber'] = "+63${_contactNumberController.text.trim()}";
       updates['address'] = _addressController.text.trim();
       updates['updatedAt'] = FieldValue.serverTimestamp();
-
       updates['isPhoneVerified'] = _isPhoneVerified;
 
       await _firestore.collection('users').doc(user.uid).update(updates);
-
-      if (updates.containsKey('photoUrl')) {
-        _photoUrl = updates['photoUrl'];
-        _selectedImage = null;
-      }
 
       if (mounted) {
         setState(() => _isSaving = false);
@@ -669,15 +729,18 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
 
   void _showSnackBar(String message, Color color) {
     if (!mounted) return;
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text(message), backgroundColor: color));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), backgroundColor: color),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_isLoading)
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    if (_isLoading) {
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
 
     return Scaffold(
       backgroundColor: const Color(0xFFF8F9FB),
@@ -722,12 +785,13 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                 ),
                 const SizedBox(height: 30),
 
+                // --- UPDATED PROFILE PICTURE SECTION ---
                 Center(
-                  child: GestureDetector(
-                    onTap: _pickImage,
-                    child: Stack(
-                      children: [
-                        Container(
+                  child: Stack(
+                    children: [
+                      GestureDetector(
+                        onTap: _isUploadingImage ? null : _pickImage,
+                        child: Container(
                           width: 100,
                           height: 100,
                           decoration: BoxDecoration(
@@ -753,23 +817,32 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                                       : null),
                           ),
                           alignment: Alignment.center,
-                          child:
-                              (_selectedImage == null &&
-                                  (_photoUrl == null || _photoUrl!.isEmpty))
-                              ? Text(
-                                  _getInitials(),
-                                  style: const TextStyle(
-                                    fontSize: 36,
-                                    fontWeight: FontWeight.bold,
-                                    color: Colors.white,
-                                    letterSpacing: 2,
-                                  ),
+                          child: _isUploadingImage
+                              ? const CircularProgressIndicator(
+                                  color: Colors.white,
+                                  strokeWidth: 3,
                                 )
-                              : null,
+                              : (_selectedImage == null &&
+                                      (_photoUrl == null || _photoUrl!.isEmpty))
+                                  ? Text(
+                                      _getInitials(),
+                                      style: const TextStyle(
+                                        fontSize: 36,
+                                        fontWeight: FontWeight.bold,
+                                        color: Colors.white,
+                                        letterSpacing: 2,
+                                      ),
+                                    )
+                                  : null,
                         ),
-                        Positioned(
-                          bottom: 0,
-                          right: 0,
+                      ),
+                      
+                      // Camera Icon (Upload)
+                      Positioned(
+                        bottom: 0,
+                        right: 0,
+                        child: GestureDetector(
+                          onTap: _isUploadingImage ? null : _pickImage,
                           child: Container(
                             padding: const EdgeInsets.all(6),
                             decoration: const BoxDecoration(
@@ -786,8 +859,33 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                             ),
                           ),
                         ),
-                      ],
-                    ),
+                      ),
+                      
+                      // Delete Icon (Only show if image exists)
+                      if (_photoUrl != null && _photoUrl!.isNotEmpty)
+                        Positioned(
+                          top: 0,
+                          right: 0,
+                          child: GestureDetector(
+                            onTap: _isUploadingImage ? null : _deleteImage,
+                            child: Container(
+                              padding: const EdgeInsets.all(6),
+                              decoration: const BoxDecoration(
+                                color: Colors.red,
+                                shape: BoxShape.circle,
+                                boxShadow: [
+                                  BoxShadow(color: Colors.black26, blurRadius: 4),
+                                ],
+                              ),
+                              child: const Icon(
+                                Icons.close,
+                                size: 16,
+                                color: Colors.white,
+                              ),
+                            ),
+                          ),
+                        ),
+                    ],
                   ),
                 ),
                 const SizedBox(height: 30),
@@ -802,8 +900,9 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                   "DISPLAY NAME",
                   _displayNameController,
                   validator: (val) {
-                    if (val == null || val.trim().isEmpty)
+                    if (val == null || val.trim().isEmpty) {
                       return "Cannot be empty";
+                    }
                     if (val.length < 3) return "Too short (min 3 chars)";
                     if (val.length > 25) return "Too long (max 25 chars)";
                     return null;
@@ -823,8 +922,9 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                           ),
                         ],
                         validator: (val) {
-                          if (val == null || val.trim().isEmpty)
+                          if (val == null || val.trim().isEmpty) {
                             return "Required";
+                          }
                           if (val.length < 2) return "Too short";
                           return null;
                         },
@@ -841,8 +941,9 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                           ),
                         ],
                         validator: (val) {
-                          if (val == null || val.trim().isEmpty)
+                          if (val == null || val.trim().isEmpty) {
                             return "Required";
+                          }
                           if (val.length < 2) return "Too short";
                           return null;
                         },
@@ -942,12 +1043,15 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                               ),
                             ),
                             validator: (value) {
-                              if (value == null || value.isEmpty)
+                              if (value == null || value.isEmpty) {
                                 return "Required";
-                              if (!value.startsWith('9'))
+                              }
+                              if (!value.startsWith('9')) {
                                 return "Must start with 9";
-                              if (value.length != 10)
+                              }
+                              if (value.length != 10) {
                                 return "Must be 10 digits";
+                              }
                               return null;
                             },
                           ),
@@ -1043,8 +1147,9 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                     Autocomplete<String>(
                       optionsBuilder:
                           (TextEditingValue textEditingValue) async {
-                            if (textEditingValue.text.isEmpty)
+                            if (textEditingValue.text.isEmpty) {
                               return const Iterable<String>.empty();
+                            }
                             return await _fetchAddressSuggestions(
                               textEditingValue.text,
                             );
@@ -1066,8 +1171,9 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                               focusNode: focusNode,
                               onEditingComplete: onEditingComplete,
                               validator: (val) {
-                                if (val == null || val.trim().isEmpty)
+                                if (val == null || val.trim().isEmpty) {
                                   return "Required";
+                                }
                                 if (val.length < 5) return "Invalid address";
                                 return null;
                               },
