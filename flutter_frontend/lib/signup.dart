@@ -285,6 +285,8 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
         'contactNumber': null,
         'signInProvider': 'manual',
         'photoUrl': null,
+        'image_url': null,
+        'image_public_id': null,
         'address': null,
         'devices': [],
         'emailVerified': false,
