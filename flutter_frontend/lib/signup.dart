@@ -552,6 +552,8 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
           'signInProvider': 'google.com',
           'photoUrl': user.photoURL ?? googleUser.photoUrl,
           'address': null,
+          'image_url': null,
+          'image_public_id': null,
           'devices': [],
           'emailVerified': user.emailVerified,
           'createdAt': FieldValue.serverTimestamp(),
