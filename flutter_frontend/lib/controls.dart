@@ -1,9 +1,15 @@
 import 'package:flutter/material.dart';
 import 'dart:async';
-// For the blur effect
+import './commands/extend_actuator.dart';
+import './commands/retract_actuator.dart';
 
 class ControlsScreen extends StatefulWidget {
-  const ControlsScreen({super.key});
+  final String deviceId; // Add deviceId parameter
+  
+  const ControlsScreen({
+    super.key,
+    required this.deviceId,
+  });
 
   @override
   State<ControlsScreen> createState() => _ControlsScreenState();
@@ -12,13 +18,14 @@ class ControlsScreen extends StatefulWidget {
 class _ControlsScreenState extends State<ControlsScreen> {
   // --- STATE VARIABLES ---
   bool _isRodExtended = false;
-  bool _isDryingSystemOn = false; // "Main Power" switch
-  int _powerConsumption = 2; 
+  bool _isDryingSystemOn = false;
+  int _powerConsumption = 2;
+  bool _isCommandProcessing = false; // Track if a command is being sent
 
   // --- TIMER VARIABLES ---
   Timer? _dryingTimer;
   int _remainingSeconds = 0;
-  String? _selectedFanTimer; // Null = No timer selected
+  String? _selectedFanTimer;
   String? _selectedFanMode;
 
   @override
@@ -29,15 +36,13 @@ class _ControlsScreenState extends State<ControlsScreen> {
 
   // --- HARDWARE MOCKUP (DYNAMIC POWER) ---
   void _calculatePower() {
-    int newPower = 2; // Base Idle (WiFi/Standby)
+    int newPower = 2;
 
-    // 1. Rod Motor
-    if (_isRodExtended) newPower += 5; 
+    if (_isRodExtended) newPower += 5;
     
-    // 2. Drying System Logic
     if (_isDryingSystemOn) {
       if (_selectedFanTimer != null) {
-        int heaterPower = 1000; 
+        int heaterPower = 1000;
         int fanPower = 0;
 
         switch (_selectedFanMode) {
@@ -45,12 +50,11 @@ class _ControlsScreenState extends State<ControlsScreen> {
           case "Med":    fanPower = 250; break;
           case "High":   fanPower = 450; break;
           case "Auto":   fanPower = 300; break;
-          default:       fanPower = 300; 
+          default:       fanPower = 300;
         }
         newPower += (heaterPower + fanPower);
-        
       } else {
-        newPower += 10; // Display + Sensors
+        newPower += 10;
       }
     }
     
@@ -61,16 +65,61 @@ class _ControlsScreenState extends State<ControlsScreen> {
     debugPrint("Sending to ESP32 -> Component: $component | Value: $value");
   }
 
+  // --- ACTUATOR CONTROL WITH FIRESTORE ---
+  Future<void> _handleActuatorControl(bool extend) async {
+    if (_isCommandProcessing) return;
+
+    setState(() => _isCommandProcessing = true);
+
+    try {
+      if (extend) {
+        await extend_actuator(deviceId: widget.deviceId);
+      } else {
+        await retract_actuator(deviceId: widget.deviceId);
+      }
+      
+      setState(() {
+        _isRodExtended = extend;
+        _calculatePower();
+      });
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(extend ? '✓ Rod extending...' : '✓ Rod retracting...'),
+            backgroundColor: Colors.green,
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint("Actuator control error: $e");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('❌ Error: ${e.toString()}'),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isCommandProcessing = false);
+      }
+    }
+  }
+
   // --- TOGGLE DRYING POWER ---
   void _toggleDryingPower() {
     setState(() {
       _isDryingSystemOn = !_isDryingSystemOn;
       
       if (!_isDryingSystemOn) {
-        _stopTimer(); 
+        _stopTimer();
       } else {
-        _selectedFanMode = "Auto"; 
-        _calculatePower(); 
+        _selectedFanMode = "Auto";
+        _calculatePower();
       }
     });
     
@@ -79,35 +128,31 @@ class _ControlsScreenState extends State<ControlsScreen> {
 
   // --- HANDLE TIMER PRESS/UNPRESS ---
   void _handleTimerSelection(String duration) {
-    // 1. NEW: Validation - If timer is running and user clicks a DIFFERENT duration
     if (_selectedFanTimer != null && _selectedFanTimer != duration) {
       _showConfirmation("Change Timer", "change the timer to $duration", () {
-          _startTimerSequence(duration);
+        _startTimerSequence(duration);
       });
       return;
     }
 
-    // 2. Existing Logic - If user clicks the SAME duration (Toggle off)
     if (_selectedFanTimer == duration) {
       _showConfirmation("Stop Timer", "cancel the current timer", () {
-          _stopTimer();
+        _stopTimer();
       });
-      return; 
+      return;
     }
 
-    // 3. Start Timer Normally
     _startTimerSequence(duration);
   }
 
-  // --- NEW: Helper to start timer (extracted to allow calling from modal) ---
   void _startTimerSequence(String duration) {
     int minutes = int.parse(duration.replaceAll('m', ''));
     int totalSeconds = minutes * 60;
 
     setState(() {
-      _selectedFanTimer = duration; 
+      _selectedFanTimer = duration;
       _remainingSeconds = totalSeconds;
-      _calculatePower(); 
+      _calculatePower();
     });
 
     _dryingTimer?.cancel();
@@ -126,7 +171,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
   void _handleFanModeSelection(String mode) {
     setState(() {
       _selectedFanMode = mode;
-      _calculatePower(); 
+      _calculatePower();
     });
     _sendToESP32("fan_mode", mode.toUpperCase());
   }
@@ -134,9 +179,9 @@ class _ControlsScreenState extends State<ControlsScreen> {
   void _stopTimer() {
     _dryingTimer?.cancel();
     setState(() {
-      _selectedFanTimer = null; 
+      _selectedFanTimer = null;
       _remainingSeconds = 0;
-      _calculatePower(); 
+      _calculatePower();
     });
     _sendToESP32("drying_status", "STOPPED");
   }
@@ -205,28 +250,35 @@ class _ControlsScreenState extends State<ControlsScreen> {
               GridView.count(
                 shrinkWrap: true,
                 physics: const NeverScrollableScrollPhysics(),
-                crossAxisCount: 2, 
+                crossAxisCount: 2,
                 crossAxisSpacing: 16,
                 mainAxisSpacing: 16,
-                childAspectRatio: 1.0, // Square cards
+                childAspectRatio: 1.0,
                 children: [
-                  // ROD CONTROL
+                  // ROD CONTROL - Updated with Firestore integration
                   _buildToggleCard(
                     title: "Extend Rod",
                     activeTitle: "Retract Rod",
                     isOn: _isRodExtended,
                     icon: Icons.height,
-                    activeColor: const Color(0xFF2962FF), 
-                    isDisabled: _isDryingSystemOn, 
+                    activeColor: const Color(0xFF2962FF),
+                    isDisabled: _isDryingSystemOn || _isCommandProcessing,
+                    isLoading: _isCommandProcessing,
                     onTap: () {
                       if (_isDryingSystemOn) {
-                        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("⚠️ Turn OFF Drying System first!"), backgroundColor: Colors.red));
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text("⚠️ Turn OFF Drying System first!"),
+                            backgroundColor: Colors.red,
+                          ),
+                        );
                         return;
                       }
-                      _showConfirmation("Rod Control", _isRodExtended ? "retract rod" : "extend rod", () {
-                        setState(() { _isRodExtended = !_isRodExtended; _calculatePower(); });
-                        _sendToESP32("rod", _isRodExtended ? "EXTEND" : "RETRACT");
-                      });
+                      _showConfirmation(
+                        "Rod Control",
+                        _isRodExtended ? "retract rod" : "extend rod",
+                        () => _handleActuatorControl(!_isRodExtended),
+                      );
                     },
                   ),
                   
@@ -236,16 +288,23 @@ class _ControlsScreenState extends State<ControlsScreen> {
                     activeTitle: "Drying System",
                     isOn: _isDryingSystemOn,
                     icon: Icons.wb_sunny_rounded,
-                    activeColor: const Color(0xFFFF6D00), 
-                    isDisabled: _isRodExtended,
+                    activeColor: const Color(0xFFFF6D00),
+                    isDisabled: _isRodExtended || _isCommandProcessing,
                     onTap: () {
                       if (_isRodExtended) {
-                        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("⚠️ Retract rod first!"), backgroundColor: Colors.red));
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text("⚠️ Retract rod first!"),
+                            backgroundColor: Colors.red,
+                          ),
+                        );
                         return;
                       }
-                      _showConfirmation("Drying System", _isDryingSystemOn ? "Turn OFF System" : "Turn ON System (Ready Mode)", () {
-                        _toggleDryingPower();
-                      });
+                      _showConfirmation(
+                        "Drying System",
+                        _isDryingSystemOn ? "Turn OFF System" : "Turn ON System (Ready Mode)",
+                        () => _toggleDryingPower(),
+                      );
                     },
                   ),
                 ],
@@ -255,9 +314,9 @@ class _ControlsScreenState extends State<ControlsScreen> {
 
               // --- 2. SETTINGS (Locked if System OFF) ---
               Opacity(
-                opacity: _isDryingSystemOn ? 1.0 : 0.5, 
+                opacity: _isDryingSystemOn ? 1.0 : 0.5,
                 child: AbsorbPointer(
-                  absorbing: !_isDryingSystemOn, 
+                  absorbing: !_isDryingSystemOn,
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
@@ -269,7 +328,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
                         _buildOptionButton("15m", _selectedFanTimer, (val) => _handleTimerSelection(val)),
                         _buildOptionButton("30m", _selectedFanTimer, (val) => _handleTimerSelection(val)),
                         
-                        // --- NEW: Stop Button (Only appears when timer is running) ---
                         if (_selectedFanTimer != null)
                           Padding(
                             padding: const EdgeInsets.only(left: 8.0),
@@ -334,43 +392,42 @@ class _ControlsScreenState extends State<ControlsScreen> {
                           Text(
                             isRunning ? "TIME REMAINING" : (_isDryingSystemOn ? "SYSTEM READY" : "SYSTEM OFF"),
                             style: TextStyle(
-                              color: Colors.white.withOpacity(0.6), 
-                              fontSize: 11, 
-                              fontWeight: FontWeight.bold, 
+                              color: Colors.white.withOpacity(0.6),
+                              fontSize: 11,
+                              fontWeight: FontWeight.bold,
                               letterSpacing: 2.0
                             ),
                           ),
                           const SizedBox(height: 8),
-                          // Monospaced Font for the timer
                           Text(
                             isRunning ? _formatTime(_remainingSeconds) : "--:--",
                             style: const TextStyle(
-                              fontSize: 56, 
-                              fontWeight: FontWeight.bold, 
-                              color: Colors.white, 
-                              fontFamily: 'monospace', // Prevents jitter
-                              letterSpacing: 2.0, 
+                              fontSize: 56,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white,
+                              fontFamily: 'monospace',
+                              letterSpacing: 2.0,
                               height: 1.0
                             ),
                           ),
                           if (isRunning) ...[
-                             const SizedBox(height: 16),
-                             Container(
-                               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                               decoration: BoxDecoration(
-                                 color: const Color(0xFF00E676).withOpacity(0.2),
-                                 borderRadius: BorderRadius.circular(20),
-                                 border: Border.all(color: const Color(0xFF00E676), width: 1.5),
-                               ),
-                               child: const Row(
-                                 mainAxisSize: MainAxisSize.min,
-                                 children: [
-                                   Icon(Icons.circle, size: 8, color: Color(0xFF00E676)),
-                                   SizedBox(width: 8),
-                                   Text("RUNNING", style: TextStyle(color: Color(0xFF00E676), fontSize: 11, fontWeight: FontWeight.w800, letterSpacing: 1.2))
-                                 ],
-                               ),
-                             )
+                            const SizedBox(height: 16),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF00E676).withOpacity(0.2),
+                                borderRadius: BorderRadius.circular(20),
+                                border: Border.all(color: const Color(0xFF00E676), width: 1.5),
+                              ),
+                              child: const Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(Icons.circle, size: 8, color: Color(0xFF00E676)),
+                                  SizedBox(width: 8),
+                                  Text("RUNNING", style: TextStyle(color: Color(0xFF00E676), fontSize: 11, fontWeight: FontWeight.w800, letterSpacing: 1.2))
+                                ],
+                              ),
+                            )
                           ]
                         ],
                       ),
@@ -379,23 +436,23 @@ class _ControlsScreenState extends State<ControlsScreen> {
                     const SizedBox(height: 24),
 
                     // Status Text Rows
-                    _buildStatusRow("Activity", 
-                      isRunning ? "DRYING" : (_isDryingSystemOn ? "READY" : (_isRodExtended ? "EXTENDED" : "IDLE")), 
+                    _buildStatusRow("Activity",
+                      isRunning ? "DRYING" : (_isDryingSystemOn ? "READY" : (_isRodExtended ? "EXTENDED" : "IDLE")),
                       isRunning ? const Color(0xFFFF6D00) : (_isRodExtended ? const Color(0xFF2962FF) : Colors.grey)
                     ),
                     const Padding(
                       padding: EdgeInsets.symmetric(vertical: 12),
                       child: Divider(),
                     ),
-                    _buildStatusRow("Power Consumption", 
-                      "$_powerConsumption W", 
+                    _buildStatusRow("Power Consumption",
+                      "$_powerConsumption W",
                       const Color(0xFF1E2339),
                       isAnimated: true
                     ),
                   ],
                 ),
               ),
-              const SizedBox(height: 100), 
+              const SizedBox(height: 100),
             ],
           ),
         ),
@@ -408,7 +465,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
         Text(label, style: const TextStyle(color: Colors.grey, fontSize: 13, fontWeight: FontWeight.w500)),
-        isAnimated 
+        isAnimated
         ? AnimatedSwitcher(
             duration: const Duration(milliseconds: 300),
             child: Text(value, key: ValueKey<String>(value), style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 14)),
@@ -420,22 +477,22 @@ class _ControlsScreenState extends State<ControlsScreen> {
 
   // --- WIDGET: Modern Toggle Card ---
   Widget _buildToggleCard({
-    required String title, 
+    required String title,
     String? activeTitle,
-    required bool isOn, 
-    required IconData icon, 
-    required Color activeColor, 
-    required VoidCallback onTap, 
-    bool isDisabled = false
+    required bool isOn,
+    required IconData icon,
+    required Color activeColor,
+    required VoidCallback onTap,
+    bool isDisabled = false,
+    bool isLoading = false,
   }) {
-    // Colors
     final Color cardBg = isOn ? activeColor : Colors.white;
     final Color iconBg = isOn ? Colors.white.withOpacity(0.2) : const Color(0xFFF5F6FA);
     final Color iconColor = isOn ? Colors.white : const Color(0xFF1E2339);
     final Color textColor = isOn ? Colors.white : const Color(0xFF1E2339);
     final Color subTextColor = isOn ? Colors.white.withOpacity(0.7) : Colors.grey;
 
-    if (isDisabled) {
+    if (isDisabled && !isLoading) {
       return Container(
         padding: const EdgeInsets.all(20),
         decoration: BoxDecoration(
@@ -448,8 +505,8 @@ class _ControlsScreenState extends State<ControlsScreen> {
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
             Container(
-              padding: const EdgeInsets.all(12), 
-              decoration: BoxDecoration(color: Colors.grey[200], shape: BoxShape.circle), 
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(color: Colors.grey[200], shape: BoxShape.circle),
               child: Icon(icon, color: Colors.grey, size: 24)
             ),
             Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -463,7 +520,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
     }
 
     return GestureDetector(
-      onTap: onTap,
+      onTap: isLoading ? null : onTap,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
         padding: const EdgeInsets.all(20),
@@ -480,14 +537,29 @@ class _ControlsScreenState extends State<ControlsScreen> {
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
             Container(
-              padding: const EdgeInsets.all(12), 
-              decoration: BoxDecoration(color: iconBg, shape: BoxShape.circle), 
-              child: Icon(icon, color: iconColor, size: 24)
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(color: iconBg, shape: BoxShape.circle),
+              child: isLoading
+                  ? SizedBox(
+                      width: 24,
+                      height: 24,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        valueColor: AlwaysStoppedAnimation<Color>(iconColor),
+                      ),
+                    )
+                  : Icon(icon, color: iconColor, size: 24),
             ),
             Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(isOn ? "ON" : "OFF", style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: subTextColor)),
+              Text(
+                isLoading ? "LOADING" : (isOn ? "ON" : "OFF"),
+                style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: subTextColor),
+              ),
               const SizedBox(height: 4),
-              Text(isOn && activeTitle != null ? activeTitle : title, style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: textColor)),
+              Text(
+                isOn && activeTitle != null ? activeTitle : title,
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: textColor),
+              ),
             ]),
           ],
         ),
@@ -506,18 +578,18 @@ class _ControlsScreenState extends State<ControlsScreen> {
           margin: const EdgeInsets.symmetric(horizontal: 6),
           padding: const EdgeInsets.symmetric(vertical: 14),
           decoration: BoxDecoration(
-            color: isSelected ? const Color(0xFF2962FF) : Colors.grey[100], // Blue or Light Grey
-            borderRadius: BorderRadius.circular(30), // Pill shape
-            boxShadow: isSelected 
-                ? [BoxShadow(color: const Color(0xFF2962FF).withOpacity(0.3), blurRadius: 8, offset: const Offset(0, 4))] 
+            color: isSelected ? const Color(0xFF2962FF) : Colors.grey[100],
+            borderRadius: BorderRadius.circular(30),
+            boxShadow: isSelected
+                ? [BoxShadow(color: const Color(0xFF2962FF).withOpacity(0.3), blurRadius: 8, offset: const Offset(0, 4))]
                 : [],
           ),
           child: Center(
             child: Text(
-              text, 
+              text,
               style: TextStyle(
-                fontSize: 13, 
-                fontWeight: FontWeight.w600, 
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
                 color: isSelected ? Colors.white : const Color(0xFF5A6175)
               )
             ),
