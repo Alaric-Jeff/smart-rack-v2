@@ -25,19 +25,70 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   int _selectedIndex = 0;
+  String? _currentDeviceId;
 
-  final List<Widget> _pages = [
-    const DashboardContent(),
-    const ControlsScreen(),
-    const NotificationsScreen(),
-    const SettingsScreen(),
-  ];
+  @override
+  void initState() {
+    super.initState();
+    _loadDeviceId();
+  }
+
+  Future<void> _loadDeviceId() async {
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user != null) {
+        final userDoc = await FirebaseFirestore.instance
+            .collection('users')
+            .doc(user.uid)
+            .get();
+        
+        if (userDoc.exists) {
+          final userData = userDoc.data() as Map<String, dynamic>;
+          String? deviceId = userData['currentDeviceConnected'] as String?;
+          
+          if (deviceId == null || deviceId.isEmpty) {
+            if (userData.containsKey('devices') && userData['devices'] is List) {
+              List devices = userData['devices'] as List;
+              if (devices.isNotEmpty) {
+                deviceId = devices[0].toString();
+              }
+            }
+          }
+          
+          if (mounted) {
+            setState(() {
+              _currentDeviceId = deviceId;
+            });
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('Error loading device ID: $e');
+    }
+  }
+
+  List<Widget> _getPages() {
+    return [
+      DashboardContent(
+        onDeviceIdUpdated: (deviceId) {
+          if (mounted) {
+            setState(() => _currentDeviceId = deviceId);
+          }
+        },
+      ),
+      ControlsScreen(deviceId: _currentDeviceId ?? ''),
+      const NotificationsScreen(),
+      const SettingsScreen(),
+    ];
+  }
 
   @override
   Widget build(BuildContext context) {
+    final pages = _getPages();
+    
     return Scaffold(
       backgroundColor: const Color(0xFFF8F9FB),
-      body: _pages[_selectedIndex > 2 ? _selectedIndex - 1 : _selectedIndex], 
+      body: pages[_selectedIndex > 2 ? _selectedIndex - 1 : _selectedIndex], 
       
       bottomNavigationBar: Container(
         decoration: BoxDecoration(
@@ -62,7 +113,7 @@ class _HomeScreenState extends State<HomeScreen> {
               Navigator.push(
                 context, 
                 MaterialPageRoute(builder: (context) => const DevicePairingScreen())
-              );
+              ).then((_) => _loadDeviceId()); // Reload device ID after pairing
             } else {
               setState(() => _selectedIndex = index);
             }
@@ -108,7 +159,12 @@ class _HomeScreenState extends State<HomeScreen> {
 // DASHBOARD CONTENT
 // ==========================================================
 class DashboardContent extends StatefulWidget {
-  const DashboardContent({super.key});
+  final Function(String?)? onDeviceIdUpdated;
+  
+  const DashboardContent({
+    super.key,
+    this.onDeviceIdUpdated,
+  });
 
   @override
   State<DashboardContent> createState() => _DashboardContentState();
@@ -123,7 +179,7 @@ class _DashboardContentState extends State<DashboardContent> {
   String _userEmail = "Loading...";
   String _deviceId = "N/A";
   String _memberSince = "Loading...";
-  String? _userProfileUrl; // CHANGED: Now uses Cloudinary image_url
+  String? _userProfileUrl;
   bool _isLoadingUser = true;
   String? _currentDeviceConnected;
   
@@ -226,15 +282,15 @@ class _DashboardContentState extends State<DashboardContent> {
           }
         }
 
+        // Notify parent widget of device ID update
+        widget.onDeviceIdUpdated?.call(_currentDeviceConnected);
+
         String? displayName = userData['displayName'];
         String? firstName = userData['firstName'];
         String? lastName = userData['lastName'];
         String? contactNumber = userData['contactNumber'];
         String email = userData['email'] ?? currentUser.email ?? 'No email';
-        
-        // CHANGED: Use Cloudinary image_url instead of photoUrl
         String? imageUrl = userData['image_url'];
-        
         Timestamp? createdAt = userData['createdAt'];
 
         bool isNameMissing = (firstName == null || firstName.isEmpty) && (lastName == null || lastName.isEmpty);
@@ -266,7 +322,6 @@ class _DashboardContentState extends State<DashboardContent> {
             _userEmail = email;
             _deviceId = deviceId;
             _memberSince = memberSince;
-            // CHANGED: Use Cloudinary URL, fallback to null if not available
             _userProfileUrl = (imageUrl != null && imageUrl.isNotEmpty) ? imageUrl : null;
             _isLoadingUser = false;
             _isProfileIncomplete = profileIncomplete; 
@@ -279,7 +334,7 @@ class _DashboardContentState extends State<DashboardContent> {
             _userEmail = currentUser.email ?? 'No email';
             _deviceId = "LD-${currentUser.uid.substring(0, 8).toUpperCase()}";
             _memberSince = "Recently";
-            _userProfileUrl = null; // No Firestore doc = no image
+            _userProfileUrl = null;
             _isLoadingUser = false;
             _isProfileIncomplete = true; 
           });
@@ -489,7 +544,6 @@ class _DashboardContentState extends State<DashboardContent> {
                             Stack(
                               alignment: Alignment.bottomRight,
                               children: [
-                                // CHANGED: Show Cloudinary image or initials
                                 CircleAvatar(
                                   radius: 50,
                                   backgroundColor: const Color(0xFF2962FF),
@@ -744,7 +798,6 @@ class _DashboardContentState extends State<DashboardContent> {
                     Text("System Dashboard", style: TextStyle(fontSize: 14, color: Color(0xFF5A6175), fontWeight: FontWeight.w500)),
                   ],
                 ),
-                // CHANGED: Show Cloudinary image or initials in header avatar
                 GestureDetector(
                   onTap: _showAccountModal, 
                   child: CircleAvatar(
