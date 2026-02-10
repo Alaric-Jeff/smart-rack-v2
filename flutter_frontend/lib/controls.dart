@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 import 'dart:async';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import './commands/extend_actuator.dart';
 import './commands/retract_actuator.dart';
+import './commands/get_actuator_state.dart';
 
 class ControlsScreen extends StatefulWidget {
-  final String deviceId; // Add deviceId parameter
+  final String deviceId;
   
   const ControlsScreen({
     super.key,
@@ -20,7 +22,8 @@ class _ControlsScreenState extends State<ControlsScreen> {
   bool _isRodExtended = false;
   bool _isDryingSystemOn = false;
   int _powerConsumption = 2;
-  bool _isCommandProcessing = false; // Track if a command is being sent
+  bool _isCommandProcessing = false;
+  bool _isLoadingState = true; // Track initial state loading
 
   // --- TIMER VARIABLES ---
   Timer? _dryingTimer;
@@ -28,10 +31,95 @@ class _ControlsScreenState extends State<ControlsScreen> {
   String? _selectedFanTimer;
   String? _selectedFanMode;
 
+  // --- FIRESTORE LISTENER ---
+  StreamSubscription<DocumentSnapshot>? _deviceListener;
+
+  @override
+  void initState() {
+    super.initState();
+    _initializeActuatorState();
+    _setupFirestoreListener();
+  }
+
   @override
   void dispose() {
     _dryingTimer?.cancel();
+    _deviceListener?.cancel();
     super.dispose();
+  }
+
+  // --- INITIALIZE ACTUATOR STATE FROM FIRESTORE ---
+  Future<void> _initializeActuatorState() async {
+    try {
+      final state = await get_actuator_state(deviceId: widget.deviceId);
+      if (mounted) {
+        setState(() {
+          _isRodExtended = state == 'extended';
+          _isLoadingState = false;
+          _calculatePower();
+        });
+      }
+    } catch (e) {
+      debugPrint("Error initializing actuator state: $e");
+      if (mounted) {
+        setState(() {
+          _isLoadingState = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('⚠️ Could not load actuator state: ${e.toString()}'),
+            backgroundColor: Colors.orange,
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
+    }
+  }
+
+  // --- SETUP REAL-TIME FIRESTORE LISTENER ---
+  void _setupFirestoreListener() {
+    final _db = FirebaseFirestore.instance;
+    
+    _deviceListener = _db
+        .collection('devices')
+        .doc(widget.deviceId)
+        .snapshots()
+        .listen(
+      (snapshot) {
+        if (!snapshot.exists || !mounted) return;
+
+        final data = snapshot.data();
+        if (data == null) return;
+
+        final actuator = data['actuator'] as Map<String, dynamic>?;
+        final state = actuator?['state'] as String?;
+
+        if (state == 'extended' || state == 'retracted') {
+          final newExtendedState = state == 'extended';
+          
+          if (_isRodExtended != newExtendedState) {
+            setState(() {
+              _isRodExtended = newExtendedState;
+              _calculatePower();
+            });
+            
+            // Optional: Show notification when state changes externally
+            if (!_isCommandProcessing) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text('ℹ️ Rod ${state == "extended" ? "extended" : "retracted"}'),
+                  backgroundColor: Colors.blue,
+                  duration: const Duration(seconds: 2),
+                ),
+              );
+            }
+          }
+        }
+      },
+      onError: (error) {
+        debugPrint("Firestore listener error: $error");
+      },
+    );
   }
 
   // --- HARDWARE MOCKUP (DYNAMIC POWER) ---
@@ -78,20 +166,22 @@ class _ControlsScreenState extends State<ControlsScreen> {
         await retract_actuator(deviceId: widget.deviceId);
       }
       
-      setState(() {
-        _isRodExtended = extend;
-        _calculatePower();
-      });
+      // Note: We don't immediately set state here anymore
+      // The Firestore listener will update the UI when the device confirms the state change
       
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(extend ? '✓ Rod extending...' : '✓ Rod retracting...'),
-            backgroundColor: Colors.green,
+            content: Text(extend ? '⏳ Extending rod...' : '⏳ Retracting rod...'),
+            backgroundColor: Colors.blue,
             duration: const Duration(seconds: 2),
           ),
         );
       }
+      
+      // Poll for state confirmation with timeout
+      await _waitForStateConfirmation(extend ? 'extended' : 'retracted');
+      
     } catch (e) {
       debugPrint("Actuator control error: $e");
       if (mounted) {
@@ -107,6 +197,46 @@ class _ControlsScreenState extends State<ControlsScreen> {
       if (mounted) {
         setState(() => _isCommandProcessing = false);
       }
+    }
+  }
+
+  // --- WAIT FOR STATE CONFIRMATION ---
+  Future<void> _waitForStateConfirmation(String expectedState) async {
+    const maxAttempts = 10;
+    const delayBetweenAttempts = Duration(milliseconds: 500);
+    
+    for (int i = 0; i < maxAttempts; i++) {
+      await Future.delayed(delayBetweenAttempts);
+      
+      try {
+        final state = await get_actuator_state(deviceId: widget.deviceId);
+        if (state == expectedState) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('✓ Rod ${expectedState == "extended" ? "extended" : "retracted"} successfully'),
+                backgroundColor: Colors.green,
+                duration: const Duration(seconds: 2),
+              ),
+            );
+          }
+          return;
+        }
+      } catch (e) {
+        // State not stable yet, continue polling
+        debugPrint("Polling attempt ${i + 1}: $e");
+      }
+    }
+    
+    // Timeout - state didn't stabilize
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('⚠️ Command sent but state confirmation timed out'),
+          backgroundColor: Colors.orange,
+          duration: Duration(seconds: 3),
+        ),
+      );
     }
   }
 
@@ -226,6 +356,31 @@ class _ControlsScreenState extends State<ControlsScreen> {
     final size = MediaQuery.of(context).size;
     final double padding = size.width * 0.05;
     bool isRunning = _isDryingSystemOn && _selectedFanTimer != null;
+
+    // Show loading indicator while fetching initial state
+    if (_isLoadingState) {
+      return Scaffold(
+        backgroundColor: const Color(0xFFF8F9FB),
+        body: const Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              CircularProgressIndicator(
+                color: Color(0xFF2962FF),
+              ),
+              SizedBox(height: 16),
+              Text(
+                'Loading device state...',
+                style: TextStyle(
+                  color: Color(0xFF5A6175),
+                  fontSize: 16,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
 
     return Scaffold(
       backgroundColor: const Color(0xFFF8F9FB),
