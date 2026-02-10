@@ -15,22 +15,30 @@ Future<void> retract_actuator({
     final data = snapshot.data()!;
     final actuator = data['actuator'] as Map<String, dynamic>?;
 
-    if (actuator == null) {
-      throw Exception('Actuator data missing');
+    // Check current state if actuator exists
+    if (actuator != null) {
+      final currentState = actuator['state'];
+      if (currentState == 'moving_retract' || currentState == 'retracted') {
+        print('Actuator is already retracting or retracted');
+        return;
+      }
     }
 
-    final currentState = actuator['state'];
-    if (currentState == 'moving_retract' || currentState == 'retracted') {
-      return;
-    }
-
+    // Use set with merge to avoid update errors
     await docRef.set({
       'actuator': {
         'target': 'retract',
+        'state': actuator?['state'] ?? 'extended',
+        'lastCommandAt': FieldValue.serverTimestamp(),
         'updatedAt': FieldValue.serverTimestamp(),
-      }
-    }, SetOptions(merge: true));
+        'source': 'user',
+      },
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true)); // KEY FIX: Use merge instead of update
+
+    print('Retract actuator command sent successfully');
   } catch (e) {
+    print('Error in retract_actuator: $e');
     rethrow;
   }
 }

@@ -15,22 +15,30 @@ Future<void> extend_actuator({
     final data = snapshot.data()!;
     final actuator = data['actuator'] as Map<String, dynamic>?;
 
-    if (actuator == null) {
-      throw Exception('Actuator data missing');
+    // Check current state if actuator exists
+    if (actuator != null) {
+      final currentState = actuator['state'];
+      if (currentState == 'moving_extend' || currentState == 'extended') {
+        print('Actuator is already extending or extended');
+        return;
+      }
     }
 
-    final currentState = actuator['state'];
-    if (currentState == 'moving_extend' || currentState == 'extended') {
-      return;
-    }
-
+    // Use set with merge to avoid update errors
     await docRef.set({
       'actuator': {
         'target': 'extend',
+        'state': actuator?['state'] ?? 'retracted',
+        'lastCommandAt': FieldValue.serverTimestamp(),
         'updatedAt': FieldValue.serverTimestamp(),
-      }
-    }, SetOptions(merge: true));
+        'source': 'user',
+      },
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true)); // KEY FIX: Use merge instead of update
+
+    print('Extend actuator command sent successfully');
   } catch (e) {
+    print('Error in extend_actuator: $e');
     rethrow;
   }
 }
