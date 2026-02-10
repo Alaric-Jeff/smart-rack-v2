@@ -202,7 +202,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
 
   // --- WAIT FOR STATE CONFIRMATION ---
   Future<void> _waitForStateConfirmation(String expectedState) async {
-    const maxAttempts = 20;
+    const maxAttempts = 140;
     const delayBetweenAttempts = Duration(milliseconds: 500);
     
     for (int i = 0; i < maxAttempts; i++) {
