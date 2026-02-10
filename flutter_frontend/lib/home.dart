@@ -77,7 +77,7 @@ class _HomeScreenState extends State<HomeScreen> {
         },
       ),
       ControlsScreen(deviceId: _currentDeviceId ?? ''),
-      const NotificationsScreen(),
+      NotificationsScreen(deviceId: _currentDeviceId ?? ''), // FIXED: Pass deviceId
       const SettingsScreen(),
     ];
   }

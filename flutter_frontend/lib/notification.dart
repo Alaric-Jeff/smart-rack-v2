@@ -1,9 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import './notifications/get_notification_stream.dart';
 
 class NotificationsScreen extends StatefulWidget {
-  const NotificationsScreen({super.key});
+  final String deviceId; // REQUIRED: Pass the current device ID
+  
+  const NotificationsScreen({
+    super.key,
+    required this.deviceId,
+  });
 
   @override
   State<NotificationsScreen> createState() => _NotificationsScreenState();
@@ -12,8 +18,25 @@ class NotificationsScreen extends StatefulWidget {
 class _NotificationsScreenState extends State<NotificationsScreen> {
   String _selectedFilter = "All"; // Options: "All", "Unread", "Read"
 
-  final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  Stream<QuerySnapshot>? _notificationStream;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadNotificationStream();
+  }
+
+  Future<void> _loadNotificationStream() async {
+    try {
+      final stream = await getNotificationStream(deviceId: widget.deviceId);
+      setState(() {
+        _notificationStream = stream;
+      });
+    } catch (e) {
+      debugPrint("Error loading notification stream: $e");
+    }
+  }
 
   // --- ACTIONS ---
   
@@ -46,10 +69,8 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   }
 
   void _deleteNotification(String docId) {
-    final user = _auth.currentUser;
-    if (user != null) {
-      _firestore.collection('users').doc(user.uid).collection('notifications').doc(docId).delete();
-    }
+    // Delete from global notifications collection
+    _firestore.collection('notifications').doc(docId).delete();
   }
 
   void _clearAllNotifications(List<DocumentSnapshot> docs) {
@@ -85,20 +106,46 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     return "${date.day}/${date.month}";
   }
 
+  // Get icon and color based on notification type
+  IconData _getNotificationIcon(String type) {
+    switch (type) {
+      case 'alert':
+        return Icons.warning_amber_rounded;
+      case 'warning':
+        return Icons.error_outline_rounded;
+      case 'success':
+        return Icons.check_circle_outline_rounded;
+      case 'info':
+      default:
+        return Icons.info_outline_rounded;
+    }
+  }
+
+  Color _getNotificationColor(String type) {
+    switch (type) {
+      case 'alert':
+        return Colors.orange;
+      case 'warning':
+        return Colors.red;
+      case 'success':
+        return Colors.green;
+      case 'info':
+      default:
+        return Colors.blue;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final double padding = MediaQuery.of(context).size.width * 0.05;
-    final user = _auth.currentUser;
 
-    if (user == null) return const Center(child: Text("Please log in"));
-
-    // --- 1. DEFINE THE STREAM ---
-    final Stream<QuerySnapshot> notificationStream = _firestore
-        .collection('users')
-        .doc(user.uid)
-        .collection('notifications')
-        .orderBy('time', descending: true)
-        .snapshots();
+    // If stream not loaded yet, show loading
+    if (_notificationStream == null) {
+      return const Scaffold(
+        backgroundColor: Color(0xFFF8F9FB),
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
 
     return Scaffold(
       backgroundColor: const Color(0xFFF8F9FB),
@@ -108,30 +155,39 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
             // --- HEADER (ALWAYS VISIBLE) ---
             Padding(
               padding: EdgeInsets.fromLTRB(padding, padding, padding, 0),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  const Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+              child: StreamBuilder<QuerySnapshot>(
+                stream: _notificationStream,
+                builder: (context, snapshot) {
+                  List<DocumentSnapshot> allDocs = [];
+                  if (snapshot.hasData) {
+                    allDocs = snapshot.data!.docs;
+                  }
+                  
+                  return Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Text("Alerts", style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
-                      Text("System Notification", style: TextStyle(fontSize: 12, color: Colors.grey)),
-                    ],
-                  ),
-                  // Placeholder icons (Functionality requires data to be loaded)
-                  Row(
-                    children: [
-                      IconButton(
-                        onPressed: () {}, 
-                        icon: const Icon(Icons.done_all, color: Colors.grey),
+                      const Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text("Alerts", style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
+                          Text("System Notification", style: TextStyle(fontSize: 12, color: Colors.grey)),
+                        ],
                       ),
-                      IconButton(
-                        onPressed: () {},
-                        icon: const Icon(Icons.delete_outline, color: Colors.grey),
-                      ),
+                      Row(
+                        children: [
+                          IconButton(
+                            onPressed: allDocs.isEmpty ? null : () => _confirmMarkAllRead(allDocs), 
+                            icon: Icon(Icons.done_all, color: allDocs.isEmpty ? Colors.grey.shade300 : Colors.grey),
+                          ),
+                          IconButton(
+                            onPressed: allDocs.isEmpty ? null : () => _clearAllNotifications(allDocs),
+                            icon: Icon(Icons.delete_outline, color: allDocs.isEmpty ? Colors.grey.shade300 : Colors.grey),
+                          ),
+                        ],
+                      )
                     ],
-                  )
-                ],
+                  );
+                }
               ),
             ),
 
@@ -157,20 +213,20 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
             // --- LIST CONTENT (HANDLES ERRORS GRACEFULLY) ---
             Expanded(
               child: StreamBuilder<QuerySnapshot>(
-                stream: notificationStream,
+                stream: _notificationStream,
                 builder: (context, snapshot) {
                   
-                  // 1. ERROR STATE (Hides the Red Screen)
+                  // 1. ERROR STATE
                   if (snapshot.hasError) {
                     debugPrint("NOTIFICATION ERROR: ${snapshot.error}"); 
                     return Center(
                       child: Column(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                          Icon(Icons.lock_clock, size: 48, color: Colors.grey[300]),
+                          Icon(Icons.error_outline, size: 48, color: Colors.grey[300]),
                           const SizedBox(height: 16),
                           Text(
-                            "Waiting for Backend Access...", 
+                            "Error Loading Notifications", 
                             style: TextStyle(
                               color: Colors.grey[500], 
                               fontWeight: FontWeight.bold
@@ -178,8 +234,9 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                           ),
                           const SizedBox(height: 8),
                           Text(
-                            "(Permission Denied)", 
-                            style: TextStyle(fontSize: 12, color: Colors.grey[400])
+                            snapshot.error.toString(), 
+                            style: TextStyle(fontSize: 12, color: Colors.grey[400]),
+                            textAlign: TextAlign.center,
                           ),
                         ],
                       ),
@@ -254,11 +311,20 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     bool isRead = item['isRead'] ?? false;
     String title = item['title'] ?? "Notification";
     String body = item['body'] ?? "";
+    String type = item['type'] ?? 'info';
+    String priority = item['priority'] ?? 'medium';
     
     String time = "Just now";
     if (item['time'] != null && item['time'] is Timestamp) {
         time = _formatTimestamp(item['time'] as Timestamp);
     }
+
+    // Get icon and color based on type
+    IconData icon = _getNotificationIcon(type);
+    Color iconColor = _getNotificationColor(type);
+
+    // Priority indicator
+    bool isHighPriority = priority == 'high' || priority == 'critical';
 
     return Dismissible(
       key: Key(docId),
@@ -275,14 +341,24 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
         decoration: BoxDecoration(
           color: isRead ? Colors.white : const Color(0xFFF0F4FF),
           borderRadius: BorderRadius.circular(16),
-          border: isRead ? Border.all(color: Colors.transparent) : Border.all(color: const Color(0xFF2962FF).withOpacity(0.1)),
+          border: isRead 
+            ? Border.all(color: Colors.transparent) 
+            : Border.all(
+                color: isHighPriority 
+                  ? Colors.red.withOpacity(0.3)
+                  : const Color(0xFF2962FF).withOpacity(0.1),
+                width: isHighPriority ? 2 : 1,
+              ),
         ),
         child: Row(
           children: [
             Container(
               padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(color: Colors.blue.withOpacity(0.1), shape: BoxShape.circle),
-              child: const Icon(Icons.notifications, color: Colors.blue, size: 20),
+              decoration: BoxDecoration(
+                color: iconColor.withOpacity(0.1), 
+                shape: BoxShape.circle
+              ),
+              child: Icon(icon, color: iconColor, size: 20),
             ),
             const SizedBox(width: 16),
             Expanded(
@@ -292,12 +368,47 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Text(title, style: const TextStyle(fontWeight: FontWeight.bold)),
+                      Expanded(
+                        child: Row(
+                          children: [
+                            Flexible(
+                              child: Text(
+                                title, 
+                                style: const TextStyle(fontWeight: FontWeight.bold),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            if (isHighPriority) ...[
+                              const SizedBox(width: 6),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: Colors.red.withOpacity(0.1),
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: Text(
+                                  priority.toUpperCase(),
+                                  style: const TextStyle(
+                                    fontSize: 8,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.red,
+                                  ),
+                                ),
+                              ),
+                            ]
+                          ],
+                        ),
+                      ),
                       Text(time, style: TextStyle(fontSize: 10, color: Colors.grey[500])),
                     ],
                   ),
                   const SizedBox(height: 4),
-                  Text(body, style: TextStyle(fontSize: 12, color: Colors.grey[700]), maxLines: 2, overflow: TextOverflow.ellipsis),
+                  Text(
+                    body, 
+                    style: TextStyle(fontSize: 12, color: Colors.grey[700]), 
+                    maxLines: 2, 
+                    overflow: TextOverflow.ellipsis
+                  ),
                 ],
               ),
             )
