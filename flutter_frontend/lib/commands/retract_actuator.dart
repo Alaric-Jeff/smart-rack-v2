@@ -24,18 +24,17 @@ Future<void> retract_actuator({
       }
     }
 
-    // Update actuator with complete schema
-    // This will auto-create the actuator map if it doesn't exist
-    await docRef.update({
+    // Use set with merge to avoid update errors
+    await docRef.set({
       'actuator': {
         'target': 'retract',
-        'state': actuator?['state'] ?? 'extended', // Keep current state or default to extended
+        'state': actuator?['state'] ?? 'extended',
         'lastCommandAt': FieldValue.serverTimestamp(),
         'updatedAt': FieldValue.serverTimestamp(),
-        'source': 'user', // Set source as user since command came from mobile
+        'source': 'user',
       },
       'updatedAt': FieldValue.serverTimestamp(),
-    });
+    }, SetOptions(merge: true)); // KEY FIX: Use merge instead of update
 
     print('Retract actuator command sent successfully');
   } catch (e) {
