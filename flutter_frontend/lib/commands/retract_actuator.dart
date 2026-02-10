@@ -15,22 +15,31 @@ Future<void> retract_actuator({
     final data = snapshot.data()!;
     final actuator = data['actuator'] as Map<String, dynamic>?;
 
-    if (actuator == null) {
-      throw Exception('Actuator data missing');
+    // Check current state if actuator exists
+    if (actuator != null) {
+      final currentState = actuator['state'];
+      if (currentState == 'moving_retract' || currentState == 'retracted') {
+        print('Actuator is already retracting or retracted');
+        return;
+      }
     }
 
-    final currentState = actuator['state'];
-    if (currentState == 'moving_retract' || currentState == 'retracted') {
-      return;
-    }
-
-    await docRef.set({
+    // Update actuator with complete schema
+    // This will auto-create the actuator map if it doesn't exist
+    await docRef.update({
       'actuator': {
         'target': 'retract',
+        'state': actuator?['state'] ?? 'extended', // Keep current state or default to extended
+        'lastCommandAt': FieldValue.serverTimestamp(),
         'updatedAt': FieldValue.serverTimestamp(),
-      }
-    }, SetOptions(merge: true));
+        'source': 'user', // Set source as user since command came from mobile
+      },
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+
+    print('Retract actuator command sent successfully');
   } catch (e) {
+    print('Error in retract_actuator: $e');
     rethrow;
   }
 }
