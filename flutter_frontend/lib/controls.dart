@@ -67,7 +67,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
         });
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('⚠️ Could not load actuator state: ${e.toString()}'),
+            content: Text('Could not load actuator state: ${e.toString()}'),
             backgroundColor: Colors.orange,
             duration: const Duration(seconds: 3),
           ),
@@ -107,7 +107,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
             if (!_isCommandProcessing) {
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(
-                  content: Text('ℹ️ Rod ${state == "extended" ? "extended" : "retracted"}'),
+                  content: Text('Rod ${state == "extended" ? "extended" : "retracted"}'),
                   backgroundColor: Colors.blue,
                   duration: const Duration(seconds: 2),
                 ),
@@ -172,7 +172,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(extend ? '⏳ Extending rod...' : '⏳ Retracting rod...'),
+            content: Text(extend ? 'Extending rod...' : 'Retracting rod...'),
             backgroundColor: Colors.blue,
             duration: const Duration(seconds: 2),
           ),
@@ -187,7 +187,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('❌ Error: ${e.toString()}'),
+            content: Text('Error: ${e.toString()}'),
             backgroundColor: Colors.red,
             duration: const Duration(seconds: 3),
           ),
@@ -202,7 +202,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
 
   // --- WAIT FOR STATE CONFIRMATION ---
   Future<void> _waitForStateConfirmation(String expectedState) async {
-    const maxAttempts = 10;
+    const maxAttempts = 20;
     const delayBetweenAttempts = Duration(milliseconds: 500);
     
     for (int i = 0; i < maxAttempts; i++) {
@@ -214,7 +214,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
-                content: Text('✓ Rod ${expectedState == "extended" ? "extended" : "retracted"} successfully'),
+                content: Text('Rod ${expectedState == "extended" ? "extended" : "retracted"} successfully'),
                 backgroundColor: Colors.green,
                 duration: const Duration(seconds: 2),
               ),
@@ -232,7 +232,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('⚠️ Command sent but state confirmation timed out'),
+          content: Text('Command sent but state confirmation timed out'),
           backgroundColor: Colors.orange,
           duration: Duration(seconds: 3),
         ),
@@ -423,7 +423,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
                       if (_isDryingSystemOn) {
                         ScaffoldMessenger.of(context).showSnackBar(
                           const SnackBar(
-                            content: Text("⚠️ Turn OFF Drying System first!"),
+                            content: Text("Turn OFF Drying System first!"),
                             backgroundColor: Colors.red,
                           ),
                         );
@@ -449,7 +449,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
                       if (_isRodExtended) {
                         ScaffoldMessenger.of(context).showSnackBar(
                           const SnackBar(
-                            content: Text("⚠️ Retract rod first!"),
+                            content: Text("Retract rod first!"),
                             backgroundColor: Colors.red,
                           ),
                         );
