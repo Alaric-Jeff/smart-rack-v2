@@ -15,28 +15,28 @@ Future<void> extend_actuator({
     final data = snapshot.data()!;
     final actuator = data['actuator'] as Map<String, dynamic>?;
 
-    // Check current state if actuator exists
+    // Block if already extending or extended
     if (actuator != null) {
-      final currentState = actuator['state'];
+      final currentState = actuator['state'] as String?;
       if (currentState == 'moving_extend' || currentState == 'extended') {
         print('Actuator is already extending or extended');
         return;
       }
     }
 
-    // Use set with merge to avoid update errors
+    // Just write the target — ESP32 polls this and reacts
+    // Do NOT touch 'state' here — only ESP32 writes state
     await docRef.set({
       'actuator': {
         'target': 'extend',
-        'state': actuator?['state'] ?? 'retracted',
         'lastCommandAt': FieldValue.serverTimestamp(),
         'updatedAt': FieldValue.serverTimestamp(),
         'source': 'user',
       },
       'updatedAt': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true)); // KEY FIX: Use merge instead of update
+    }, SetOptions(merge: true));
 
-    print('Extend actuator command sent successfully');
+    print('Extend command written to Firestore');
   } catch (e) {
     print('Error in extend_actuator: $e');
     rethrow;

@@ -15,28 +15,28 @@ Future<void> retract_actuator({
     final data = snapshot.data()!;
     final actuator = data['actuator'] as Map<String, dynamic>?;
 
-    // Check current state if actuator exists
+    // Block if already retracting or retracted
     if (actuator != null) {
-      final currentState = actuator['state'];
+      final currentState = actuator['state'] as String?;
       if (currentState == 'moving_retract' || currentState == 'retracted') {
         print('Actuator is already retracting or retracted');
         return;
       }
     }
 
-    // Use set with merge to avoid update errors
+    // Just write the target — ESP32 polls this and reacts
+    // Do NOT touch 'state' here — only ESP32 writes state
     await docRef.set({
       'actuator': {
         'target': 'retract',
-        'state': actuator?['state'] ?? 'extended',
         'lastCommandAt': FieldValue.serverTimestamp(),
         'updatedAt': FieldValue.serverTimestamp(),
         'source': 'user',
       },
       'updatedAt': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true)); // KEY FIX: Use merge instead of update
+    }, SetOptions(merge: true));
 
-    print('Retract actuator command sent successfully');
+    print('Retract command written to Firestore');
   } catch (e) {
     print('Error in retract_actuator: $e');
     rethrow;
