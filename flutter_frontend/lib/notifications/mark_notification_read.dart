@@ -5,11 +5,9 @@ Future<void> markNotificationRead({
 }) async {
   try {
     final db = FirebaseFirestore.instance;
-
     await db.collection('notifications').doc(notifId).update({
       'isRead': true,
     });
-    
   } catch (e) {
     rethrow;
   }

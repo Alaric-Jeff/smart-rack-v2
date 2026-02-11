@@ -4,29 +4,24 @@ Future<String?> get_actuator_state({
   required String deviceId,
 }) async {
   try {
-    final _db = FirebaseFirestore.instance;
+    final db = FirebaseFirestore.instance;
+    final snapshot = await db.collection('devices').doc(deviceId).get();
 
-    final deviceRef =
-        await _db.collection('devices').doc(deviceId).get();
-
-    if (!deviceRef.exists) {
+    if (!snapshot.exists) {
       throw Exception('Device not found');
     }
 
-    final deviceData = deviceRef.data();
-    if (deviceData == null) {
-      throw Exception('Device data is null');
-    }
+    final data = snapshot.data();
+    if (data == null) throw Exception('Device data is null');
 
-    final actuator = deviceData['actuator'] as Map<String, dynamic>?;
-
+    final actuator = data['actuator'] as Map<String, dynamic>?;
     final state = actuator?['state'] as String?;
 
     if (state == 'extended' || state == 'retracted') {
       return state;
     }
 
-    // Anything else means actuator is moving or unknown
+    // moving_extend / moving_retract / null = not stable
     throw Exception('Actuator state is not stable yet: $state');
   } catch (e) {
     rethrow;
