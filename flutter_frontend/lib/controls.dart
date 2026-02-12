@@ -26,8 +26,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
   bool _isLoadingState = true;
 
   // --- COOLDOWN VARIABLES ---
-  // After sending a command, disable the button for 60 seconds
-  // regardless of what Firestore says (prevents double-commands)
   Timer? _cooldownTimer;
   int _cooldownRemainingSeconds = 0;
   bool get _isCoolingDown => _cooldownRemainingSeconds > 0;
@@ -44,8 +42,14 @@ class _ControlsScreenState extends State<ControlsScreen> {
   @override
   void initState() {
     super.initState();
-    _initializeActuatorState();
-    _setupFirestoreListener();
+    // FIX: Check if deviceId is empty before initializing
+    if (widget.deviceId.isNotEmpty) {
+      _initializeActuatorState();
+      _setupFirestoreListener();
+    } else {
+      // If empty, just stop loading so the UI can show the empty state
+      setState(() => _isLoadingState = false);
+    }
   }
 
   @override
@@ -58,6 +62,9 @@ class _ControlsScreenState extends State<ControlsScreen> {
 
   // --- LOAD INITIAL STATE (one-time read) ---
   Future<void> _initializeActuatorState() async {
+    // FIX: Guard clause
+    if (widget.deviceId.isEmpty) return; 
+
     try {
       final state = await get_actuator_state(deviceId: widget.deviceId);
       if (mounted) {
@@ -68,7 +75,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
         });
       }
     } catch (e) {
-      // State may be "moving" on startup — that's fine, listener will catch it
       debugPrint('Initial state load: $e');
       if (mounted) {
         setState(() => _isLoadingState = false);
@@ -77,9 +83,10 @@ class _ControlsScreenState extends State<ControlsScreen> {
   }
 
   // --- REAL-TIME FIRESTORE LISTENER ---
-  // This is the KEY fix: the UI reacts instantly when ESP32 writes
-  // state back to Firestore — no polling loop needed.
   void _setupFirestoreListener() {
+    // FIX: Guard clause to prevent "non-empty string" error
+    if (widget.deviceId.isEmpty) return;
+
     _deviceListener = FirebaseFirestore.instance
         .collection('devices')
         .doc(widget.deviceId)
@@ -94,15 +101,13 @@ class _ControlsScreenState extends State<ControlsScreen> {
         final actuator = data['actuator'] as Map<String, dynamic>?;
         final state = actuator?['state'] as String?;
 
-        // Only update UI on stable final states (extended / retracted)
-        // Ignore moving_extend / moving_retract — those are in-progress
         if (state == 'extended' || state == 'retracted') {
           final newExtended = state == 'extended';
 
           if (_isRodExtended != newExtended) {
             setState(() {
               _isRodExtended = newExtended;
-              _isCommandProcessing = false; // movement confirmed complete
+              _isCommandProcessing = false;
               _calculatePower();
             });
 
@@ -119,7 +124,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
             );
           }
         } else if (state == 'moving_extend' || state == 'moving_retract') {
-          // ESP32 confirmed it started moving — show processing state
           if (!_isCommandProcessing && mounted) {
             setState(() => _isCommandProcessing = true);
           }
@@ -131,9 +135,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
     );
   }
 
-  // --- START 60-SECOND UI COOLDOWN ---
-  // Prevents the user from spamming commands while ESP32 is moving.
-  // The button stays locked for 60s after a command is sent.
   void _startCooldown() {
     _cooldownTimer?.cancel();
     setState(() => _cooldownRemainingSeconds = 60);
@@ -148,8 +149,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
         if (_cooldownRemainingSeconds <= 0) {
           _cooldownRemainingSeconds = 0;
           timer.cancel();
-          // If we're still in processing state after 60s but Firestore
-          // hasn't confirmed, release the lock gracefully
           if (_isCommandProcessing) {
             _isCommandProcessing = false;
           }
@@ -158,10 +157,13 @@ class _ControlsScreenState extends State<ControlsScreen> {
     });
   }
 
-  // --- SEND ACTUATOR COMMAND ---
   Future<void> _handleActuatorControl(bool extend) async {
-    // Blocked during cooldown or active processing
     if (_isCoolingDown || _isCommandProcessing) return;
+    // FIX: Check ID before sending command
+    if (widget.deviceId.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("No device connected"), backgroundColor: Colors.red));
+        return;
+    }
 
     setState(() => _isCommandProcessing = true);
 
@@ -172,8 +174,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
         await retract_actuator(deviceId: widget.deviceId);
       }
 
-      // Command written to Firestore — start cooldown immediately
-      // UI will update automatically when ESP32 writes back the new state
       _startCooldown();
 
       if (mounted) {
@@ -191,7 +191,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
       }
     } catch (e) {
       debugPrint('Actuator control error: $e');
-      // Release lock on error
       setState(() => _isCommandProcessing = false);
 
       if (mounted) {
@@ -206,7 +205,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
     }
   }
 
-  // --- POWER CALCULATION ---
   void _calculatePower() {
     int newPower = 2;
     if (_isRodExtended) newPower += 5;
@@ -226,7 +224,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
             fanPower = 450;
             break;
           default:
-            fanPower = 300; // Auto
+            fanPower = 300; 
         }
         newPower += (heaterPower + fanPower);
       } else {
@@ -355,10 +353,34 @@ class _ControlsScreenState extends State<ControlsScreen> {
     final double padding = size.width * 0.05;
     bool isRunning = _isDryingSystemOn && _selectedFanTimer != null;
 
-    // Determine the rod button's effective disabled state
-    // Locked if: drying system is on, OR currently in cooldown/processing
     final bool rodButtonLocked =
         _isDryingSystemOn || _isCoolingDown || _isCommandProcessing;
+
+    // FIX: Handle Empty Device ID gracefully in the UI
+    if (widget.deviceId.isEmpty) {
+      return Scaffold(
+        backgroundColor: const Color(0xFFF8F9FB),
+        appBar: AppBar(title: const Text("Controls"), backgroundColor: Colors.transparent, elevation: 0),
+        body: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.link_off, size: 64, color: Colors.grey[400]),
+              const SizedBox(height: 16),
+              Text(
+                "No Device Connected",
+                style: TextStyle(fontSize: 18, color: Colors.grey[600], fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                "Please pair a device in Settings",
+                style: TextStyle(color: Colors.grey),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
 
     if (_isLoadingState) {
       return const Scaffold(
@@ -406,7 +428,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
               const SizedBox(height: 28),
 
               // --- COOLDOWN BANNER ---
-              // Shows a progress indicator while the actuator is moving
               if (_isCoolingDown) ...[
                 Container(
                   width: double.infinity,
