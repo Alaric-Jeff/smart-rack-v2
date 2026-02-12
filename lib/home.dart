@@ -25,19 +25,70 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   int _selectedIndex = 0;
+  String? _currentDeviceId;
 
-  final List<Widget> _pages = [
-    const DashboardContent(),
-    const ControlsScreen(),
-    const NotificationsScreen(),
-    const SettingsScreen(),
-  ];
+  @override
+  void initState() {
+    super.initState();
+    _loadDeviceId();
+  }
+
+  Future<void> _loadDeviceId() async {
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user != null) {
+        final userDoc = await FirebaseFirestore.instance
+            .collection('users')
+            .doc(user.uid)
+            .get();
+        
+        if (userDoc.exists) {
+          final userData = userDoc.data() as Map<String, dynamic>;
+          String? deviceId = userData['currentDeviceConnected'] as String?;
+          
+          if (deviceId == null || deviceId.isEmpty) {
+            if (userData.containsKey('devices') && userData['devices'] is List) {
+              List devices = userData['devices'] as List;
+              if (devices.isNotEmpty) {
+                deviceId = devices[0].toString();
+              }
+            }
+          }
+          
+          if (mounted) {
+            setState(() {
+              _currentDeviceId = deviceId;
+            });
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('Error loading device ID: $e');
+    }
+  }
+
+  List<Widget> _getPages() {
+    return [
+      DashboardContent(
+        onDeviceIdUpdated: (deviceId) {
+          if (mounted) {
+            setState(() => _currentDeviceId = deviceId);
+          }
+        },
+      ),
+      ControlsScreen(deviceId: _currentDeviceId ?? ''),
+      NotificationsScreen(deviceId: _currentDeviceId ?? ''), // FIXED: Pass deviceId
+      const SettingsScreen(),
+    ];
+  }
 
   @override
   Widget build(BuildContext context) {
+    final pages = _getPages();
+    
     return Scaffold(
       backgroundColor: const Color(0xFFF8F9FB),
-      body: _pages[_selectedIndex > 2 ? _selectedIndex - 1 : _selectedIndex], 
+      body: pages[_selectedIndex > 2 ? _selectedIndex - 1 : _selectedIndex], 
       
       bottomNavigationBar: Container(
         decoration: BoxDecoration(
@@ -62,7 +113,7 @@ class _HomeScreenState extends State<HomeScreen> {
               Navigator.push(
                 context, 
                 MaterialPageRoute(builder: (context) => const DevicePairingScreen())
-              );
+              ).then((_) => _loadDeviceId()); // Reload device ID after pairing
             } else {
               setState(() => _selectedIndex = index);
             }
@@ -108,7 +159,12 @@ class _HomeScreenState extends State<HomeScreen> {
 // DASHBOARD CONTENT
 // ==========================================================
 class DashboardContent extends StatefulWidget {
-  const DashboardContent({super.key});
+  final Function(String?)? onDeviceIdUpdated;
+  
+  const DashboardContent({
+    super.key,
+    this.onDeviceIdUpdated,
+  });
 
   @override
   State<DashboardContent> createState() => _DashboardContentState();
@@ -137,7 +193,7 @@ class _DashboardContentState extends State<DashboardContent> {
   double _sensorHumidity = 0;
   double _sensorTemperature = 0;
   double _sensorLight = 0;
-  double _sensorRainIntensity = 4095; // Default to max (Dry)
+  double _sensorRainIntensity = 4095;
   
   // Calculated rainfall confidence
   double _rainConfidence = 0;
@@ -182,12 +238,10 @@ class _DashboardContentState extends State<DashboardContent> {
   }
 
   void _startSensorUpdates() {
-    // Start periodic updates
     _sensorUpdateTimer = Timer.periodic(
       const Duration(seconds: SENSOR_UPDATE_INTERVAL_SECONDS),
       (_) => _fetchSensorData(),
     );
-    // Fetch immediately
     _fetchSensorData();
   }
 
@@ -228,12 +282,15 @@ class _DashboardContentState extends State<DashboardContent> {
           }
         }
 
+        // Notify parent widget of device ID update
+        widget.onDeviceIdUpdated?.call(_currentDeviceConnected);
+
         String? displayName = userData['displayName'];
         String? firstName = userData['firstName'];
         String? lastName = userData['lastName'];
         String? contactNumber = userData['contactNumber'];
         String email = userData['email'] ?? currentUser.email ?? 'No email';
-        String? photoUrl = userData['photoUrl'];
+        String? imageUrl = userData['image_url'];
         Timestamp? createdAt = userData['createdAt'];
 
         bool isNameMissing = (firstName == null || firstName.isEmpty) && (lastName == null || lastName.isEmpty);
@@ -241,7 +298,7 @@ class _DashboardContentState extends State<DashboardContent> {
         bool profileIncomplete = isNameMissing || isPhoneMissing;
 
         String finalDisplayName;
-        if (displayName != null && displayName.isNotEmpty) {
+        if (displayName != null && displayName.isNotEmpty) { 
           finalDisplayName = displayName;
         } else if (firstName != null && lastName != null) {
           finalDisplayName = '$firstName $lastName';
@@ -265,7 +322,7 @@ class _DashboardContentState extends State<DashboardContent> {
             _userEmail = email;
             _deviceId = deviceId;
             _memberSince = memberSince;
-            _userProfileUrl = photoUrl;
+            _userProfileUrl = (imageUrl != null && imageUrl.isNotEmpty) ? imageUrl : null;
             _isLoadingUser = false;
             _isProfileIncomplete = profileIncomplete; 
           });
@@ -277,7 +334,7 @@ class _DashboardContentState extends State<DashboardContent> {
             _userEmail = currentUser.email ?? 'No email';
             _deviceId = "LD-${currentUser.uid.substring(0, 8).toUpperCase()}";
             _memberSince = "Recently";
-            _userProfileUrl = currentUser.photoURL;
+            _userProfileUrl = null;
             _isLoadingUser = false;
             _isProfileIncomplete = true; 
           });
@@ -496,7 +553,11 @@ class _DashboardContentState extends State<DashboardContent> {
                                   child: _userProfileUrl == null 
                                       ? Text(
                                           _getInitials(_userName),
-                                          style: const TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: Color.fromARGB(255, 255, 255, 255)),
+                                          style: const TextStyle(
+                                            fontSize: 32, 
+                                            fontWeight: FontWeight.bold, 
+                                            color: Colors.white
+                                          ),
                                         )
                                       : null,
                                 ),
@@ -625,7 +686,6 @@ class _DashboardContentState extends State<DashboardContent> {
     );
   }
 
-  // --- UPDATED SHOW DETAIL MODAL ---
   void _showDetailModal(String title, String value, List<SensorDataPoint> historyData, String statusMsg) {
     showModalBottomSheet(
       context: context,
@@ -669,7 +729,6 @@ class _DashboardContentState extends State<DashboardContent> {
                             const Text("Recent History (Last 30 min)", style: TextStyle(color: Colors.grey, fontSize: 14)),
                             const SizedBox(height: 20),
                             
-                            // -- CHANGED LOGIC HERE --
                             title == "Weather" 
                             ? const SizedBox(
                                 height: 100, 
@@ -690,7 +749,6 @@ class _DashboardContentState extends State<DashboardContent> {
                       const SizedBox(height: 24),
                       const Text("Status", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
                       const SizedBox(height: 8),
-                      // -- CHANGED LOGIC HERE FOR STATUS --
                       Text(
                           title == "Weather" 
                             ? "Weather conditions are updated periodically based on your location. This data is independent of your local sensors."
@@ -712,10 +770,8 @@ class _DashboardContentState extends State<DashboardContent> {
     final size = MediaQuery.of(context).size;
     final double padding = size.width * 0.05;
 
-    // --- CHECK: Is Device Connected? ---
     bool isDeviceConnected = _currentDeviceConnected != null && _currentDeviceConnected!.isNotEmpty;
 
-    // --- Updated Logic: Dry = "No Rain", Wet = Status ---
     String getRainStatus() {
       if (_sensorRainIntensity > 3500) return "No Rain";
       if (_sensorRainIntensity > 2000) return "Drizzle";
@@ -723,7 +779,6 @@ class _DashboardContentState extends State<DashboardContent> {
       return "Heavy Rain";
     }
 
-    // --- Updated Logic: Is it raining? ---
     bool isRaining = _sensorRainIntensity <= 3500;
 
     return SafeArea(
@@ -750,7 +805,10 @@ class _DashboardContentState extends State<DashboardContent> {
                     backgroundColor: const Color(0xFF2962FF),
                     backgroundImage: _userProfileUrl != null ? NetworkImage(_userProfileUrl!) : null,
                     child: _userProfileUrl == null 
-                        ? Text(_getInitials(_userName), style: const TextStyle(fontWeight: FontWeight.bold, color: Color.fromARGB(255, 255, 255, 255))) 
+                        ? Text(
+                            _getInitials(_userName), 
+                            style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white)
+                          ) 
                         : null,
                   ),
                 ),
@@ -758,7 +816,7 @@ class _DashboardContentState extends State<DashboardContent> {
             ),
             const SizedBox(height: 16),
 
-            // --- 1. Incomplete Profile Notice ---
+            // Profile completion notice
             if (_isProfileIncomplete && !_isLoadingUser) ...[
               GestureDetector(
                 onTap: () {
@@ -795,7 +853,7 @@ class _DashboardContentState extends State<DashboardContent> {
               ),
             ],
 
-            // --- 2. NEW: Device Not Connected Notice ---
+            // Device not connected notice
             if (!isDeviceConnected && !_isLoadingUser) ...[
               GestureDetector(
                 onTap: () {
@@ -833,7 +891,7 @@ class _DashboardContentState extends State<DashboardContent> {
             ] else 
               const SizedBox(height: 24),
 
-            // Weather Card (Always Active)
+            // Weather Card
             FutureBuilder<Map<String, dynamic>>(
               future: _fetchWeather(),
               builder: (context, snapshot) {
@@ -879,11 +937,11 @@ class _DashboardContentState extends State<DashboardContent> {
 
             const SizedBox(height: 24),
 
-            // --- 3. Sensor Cards Grid (Disabled if Disconnected) ---
+            // Sensor Cards Grid
             IgnorePointer(
-              ignoring: !isDeviceConnected, // Disable clicks if no device
+              ignoring: !isDeviceConnected,
               child: Opacity(
-                opacity: isDeviceConnected ? 1.0 : 0.3, // Fade out if no device
+                opacity: isDeviceConnected ? 1.0 : 0.3,
                 child: GridView.count(
                   crossAxisCount: 2,
                   shrinkWrap: true,
@@ -1088,7 +1146,6 @@ class TimeSeriesChartPainter extends CustomPainter {
       ..color = color
       ..style = PaintingStyle.fill;
     
-    // Find min and max values
     double maxVal = data.map((e) => e.value).reduce((a, b) => a > b ? a : b);
     double minVal = data.map((e) => e.value).reduce((a, b) => a < b ? a : b);
     
@@ -1116,7 +1173,6 @@ class TimeSeriesChartPainter extends CustomPainter {
     
     canvas.drawPath(path, paint);
     
-    // Draw gradient fill under the line
     final gradientPaint = Paint()
       ..shader = LinearGradient(
         begin: Alignment.topCenter,

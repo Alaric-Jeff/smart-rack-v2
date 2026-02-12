@@ -8,9 +8,9 @@ Future<void> setImage({
   required String fileBase64,
   String? oldPublicId
 }) async {
-  final _db = FirebaseFirestore.instance;
+  final db = FirebaseFirestore.instance;
 
-  final userRef = await _db.collection('users').doc(userId).get();
+  final userRef = await db.collection('users').doc(userId).get();
 
   if(!userRef.exists){
     throw Exception('User not found');
@@ -45,7 +45,7 @@ Future<void> setImage({
     final publicId = result['public_id'];
     final imageUrl = result['url'];
 
-    await _db.collection('users').doc(userId).set({
+    await db.collection('users').doc(userId).set({
       'image_public_id': publicId,
       'image_url': imageUrl,
       'updated_at': FieldValue.serverTimestamp(),
