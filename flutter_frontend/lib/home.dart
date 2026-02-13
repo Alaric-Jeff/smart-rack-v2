@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_database/firebase_database.dart';
 import 'dart:async';
 import 'controls.dart'; 
 import 'notification.dart';
@@ -13,7 +14,6 @@ import 'device_pairing.dart';
 // ============================================
 // TOP LEVEL CONFIGURATION
 // ============================================
-const int SENSOR_UPDATE_INTERVAL_SECONDS = 10;
 const int HISTORY_DURATION_MINUTES = 30;
 
 class HomeScreen extends StatefulWidget {
@@ -77,7 +77,7 @@ class _HomeScreenState extends State<HomeScreen> {
         },
       ),
       ControlsScreen(deviceId: _currentDeviceId ?? ''),
-      NotificationsScreen(deviceId: _currentDeviceId ?? ''), // FIXED: Pass deviceId
+      NotificationsScreen(deviceId: _currentDeviceId ?? ''),
       const SettingsScreen(),
     ];
   }
@@ -113,7 +113,7 @@ class _HomeScreenState extends State<HomeScreen> {
               Navigator.push(
                 context, 
                 MaterialPageRoute(builder: (context) => const DevicePairingScreen())
-              ).then((_) => _loadDeviceId()); // Reload device ID after pairing
+              ).then((_) => _loadDeviceId());
             } else {
               setState(() => _selectedIndex = index);
             }
@@ -123,7 +123,6 @@ class _HomeScreenState extends State<HomeScreen> {
             const BottomNavigationBarItem(icon: Icon(Icons.home_filled), label: "HOME"),
             const BottomNavigationBarItem(icon: Icon(Icons.tune), label: "CONTROLS"),
             
-            // Plus Button
             BottomNavigationBarItem(
               icon: Container(
                 height: 45,
@@ -183,7 +182,6 @@ class _DashboardContentState extends State<DashboardContent> {
   bool _isLoadingUser = true;
   String? _currentDeviceConnected;
   
-  // Profile Completion Check
   bool _isProfileIncomplete = false;
 
   // Weather data
@@ -195,10 +193,9 @@ class _DashboardContentState extends State<DashboardContent> {
   double _sensorLight = 0;
   double _sensorRainIntensity = 4095;
   
-  // Calculated rainfall confidence
   double _rainConfidence = 0;
 
-  // Time-series history (client-side, last 30 minutes)
+  // Time-series history
   final List<SensorDataPoint> _humidityHistory = [];
   final List<SensorDataPoint> _tempHistory = [];
   final List<SensorDataPoint> _lightHistory = [];
@@ -206,25 +203,21 @@ class _DashboardContentState extends State<DashboardContent> {
   final List<SensorDataPoint> _rainConfidenceHistory = [];
   final List<double> _weatherHistory = [];
 
-  Timer? _sensorUpdateTimer;
-  StreamSubscription<DocumentSnapshot>? _sensorSubscription;
+  StreamSubscription<DatabaseEvent>? _sensorSubscription;
 
   @override
   void initState() {
     super.initState();
     _fetchUserData();
     _fetchWeather();
-    _startSensorUpdates();
   }
 
   @override
   void dispose() {
-    _sensorUpdateTimer?.cancel();
     _sensorSubscription?.cancel();
     super.dispose();
   }
 
-  // --- Helper to Get Initials ---
   String _getInitials(String name) {
     if (name.isEmpty || name == "Loading...") return "";
     List<String> nameParts = name.trim().split(RegExp(r'\s+')); 
@@ -238,11 +231,57 @@ class _DashboardContentState extends State<DashboardContent> {
   }
 
   void _startSensorUpdates() {
-    _sensorUpdateTimer = Timer.periodic(
-      const Duration(seconds: SENSOR_UPDATE_INTERVAL_SECONDS),
-      (_) => _fetchSensorData(),
+    if (_currentDeviceConnected == null || _currentDeviceConnected!.isEmpty) {
+      debugPrint("No device connected, skipping sensor listener");
+      return;
+    }
+
+    _sensorSubscription?.cancel();
+
+    _sensorSubscription = FirebaseDatabase.instance
+        .ref('devices/$_currentDeviceConnected/sensors')
+        .onValue
+        .listen(
+      (DatabaseEvent event) {
+        if (!event.snapshot.exists || !mounted) return;
+
+        final sensorData = event.snapshot.value as Map<dynamic, dynamic>?;
+        if (sensorData == null) return;
+
+        double humidity = (sensorData['humidity'] ?? 0).toDouble();
+        double temperature = (sensorData['temperature'] ?? 0).toDouble();
+        double light = (sensorData['light'] ?? 0).toDouble();
+        double rainIntensity = (sensorData['rainAO'] ?? 0).toDouble();
+
+        double rainConfidence = _calculateRainfallConfidence(
+          humidity: humidity,
+          temperature: temperature,
+          light: light,
+          rainIntensity: rainIntensity,
+        );
+
+        DateTime now = DateTime.now();
+
+        setState(() {
+          _sensorHumidity = humidity;
+          _sensorTemperature = temperature;
+          _sensorLight = light;
+          _sensorRainIntensity = rainIntensity;
+          _rainConfidence = rainConfidence;
+
+          _addToHistory(_humidityHistory, humidity, now);
+          _addToHistory(_tempHistory, temperature, now);
+          _addToHistory(_lightHistory, light, now);
+          _addToHistory(_rainHistory, rainIntensity, now);
+          _addToHistory(_rainConfidenceHistory, rainConfidence, now);
+
+          _cleanupOldHistory();
+        });
+      },
+      onError: (error) {
+        debugPrint('Sensor listener error: $error');
+      },
     );
-    _fetchSensorData();
   }
 
   Future<void> _fetchUserData() async {
@@ -282,7 +321,6 @@ class _DashboardContentState extends State<DashboardContent> {
           }
         }
 
-        // Notify parent widget of device ID update
         widget.onDeviceIdUpdated?.call(_currentDeviceConnected);
 
         String? displayName = userData['displayName'];
@@ -326,6 +364,8 @@ class _DashboardContentState extends State<DashboardContent> {
             _isLoadingUser = false;
             _isProfileIncomplete = profileIncomplete; 
           });
+
+          _startSensorUpdates();
         }
       } else {
         if (mounted) {
@@ -359,58 +399,6 @@ class _DashboardContentState extends State<DashboardContent> {
       'July', 'August', 'September', 'October', 'November', 'December'
     ];
     return months[month - 1];
-  }
-
-  Future<void> _fetchSensorData() async {
-    if (_currentDeviceConnected == null || _currentDeviceConnected!.isEmpty) {
-      debugPrint("No device connected for current user");
-      return;
-    }
-
-    try {
-      DocumentSnapshot sensorDoc = await _firestore
-          .collection('device_sensors')
-          .doc(_currentDeviceConnected)
-          .get();
-
-      if (sensorDoc.exists) {
-        Map<String, dynamic> sensorData = sensorDoc.data() as Map<String, dynamic>;
-        
-        double humidity = (sensorData['humidity'] ?? 0).toDouble();
-        double temperature = (sensorData['temperature'] ?? 0).toDouble();
-        double light = (sensorData['light'] ?? 0).toDouble();
-        double rainIntensity = (sensorData['rainAO'] ?? 0).toDouble();
-
-        double rainConfidence = _calculateRainfallConfidence(
-          humidity: humidity,
-          temperature: temperature,
-          light: light,
-          rainIntensity: rainIntensity,
-        );
-
-        DateTime now = DateTime.now();
-        
-        if (mounted) {
-          setState(() {
-            _sensorHumidity = humidity;
-            _sensorTemperature = temperature;
-            _sensorLight = light;
-            _sensorRainIntensity = rainIntensity;
-            _rainConfidence = rainConfidence;
-
-            _addToHistory(_humidityHistory, humidity, now);
-            _addToHistory(_tempHistory, temperature, now);
-            _addToHistory(_lightHistory, light, now);
-            _addToHistory(_rainHistory, rainIntensity, now);
-            _addToHistory(_rainConfidenceHistory, rainConfidence, now);
-            
-            _cleanupOldHistory();
-          });
-        }
-      }
-    } catch (e) {
-      debugPrint('Error fetching sensor data: $e');
-    }
   }
 
   double _calculateRainfallConfidence({
@@ -816,7 +804,6 @@ class _DashboardContentState extends State<DashboardContent> {
             ),
             const SizedBox(height: 16),
 
-            // Profile completion notice
             if (_isProfileIncomplete && !_isLoadingUser) ...[
               GestureDetector(
                 onTap: () {
@@ -853,7 +840,6 @@ class _DashboardContentState extends State<DashboardContent> {
               ),
             ],
 
-            // Device not connected notice
             if (!isDeviceConnected && !_isLoadingUser) ...[
               GestureDetector(
                 onTap: () {
@@ -891,7 +877,6 @@ class _DashboardContentState extends State<DashboardContent> {
             ] else 
               const SizedBox(height: 24),
 
-            // Weather Card
             FutureBuilder<Map<String, dynamic>>(
               future: _fetchWeather(),
               builder: (context, snapshot) {
@@ -937,7 +922,6 @@ class _DashboardContentState extends State<DashboardContent> {
 
             const SizedBox(height: 24),
 
-            // Sensor Cards Grid
             IgnorePointer(
               ignoring: !isDeviceConnected,
               child: Opacity(
