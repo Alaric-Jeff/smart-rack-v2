@@ -1,9 +1,6 @@
 import 'package:flutter/material.dart';
 import 'dart:async';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import './commands/extend_actuator.dart';
-import './commands/retract_actuator.dart';
-import './commands/get_actuator_state.dart';
+import 'package:firebase_database/firebase_database.dart';
 
 class ControlsScreen extends StatefulWidget {
   final String deviceId;
@@ -26,8 +23,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
   bool _isLoadingState = true;
 
   // --- COOLDOWN VARIABLES ---
-  // After sending a command, disable the button for 60 seconds
-  // regardless of what Firestore says (prevents double-commands)
   Timer? _cooldownTimer;
   int _cooldownRemainingSeconds = 0;
   bool get _isCoolingDown => _cooldownRemainingSeconds > 0;
@@ -38,14 +33,14 @@ class _ControlsScreenState extends State<ControlsScreen> {
   String? _selectedFanTimer;
   String? _selectedFanMode;
 
-  // --- FIRESTORE LISTENER ---
-  StreamSubscription<DocumentSnapshot>? _deviceListener;
+  // --- REALTIME DATABASE LISTENER ---
+  StreamSubscription<DatabaseEvent>? _deviceListener;
 
   @override
   void initState() {
     super.initState();
     _initializeActuatorState();
-    _setupFirestoreListener();
+    _setupRealtimeDatabaseListener();
   }
 
   @override
@@ -59,16 +54,23 @@ class _ControlsScreenState extends State<ControlsScreen> {
   // --- LOAD INITIAL STATE (one-time read) ---
   Future<void> _initializeActuatorState() async {
     try {
-      final state = await get_actuator_state(deviceId: widget.deviceId);
-      if (mounted) {
+      final snapshot = await FirebaseDatabase.instance
+          .ref('devices/${widget.deviceId}/actuator/state')
+          .get();
+      
+      if (snapshot.exists && mounted) {
+        final state = snapshot.value as String?;
         setState(() {
           _isRodExtended = state == 'extended';
           _isLoadingState = false;
           _calculatePower();
         });
+      } else {
+        if (mounted) {
+          setState(() => _isLoadingState = false);
+        }
       }
     } catch (e) {
-      // State may be "moving" on startup — that's fine, listener will catch it
       debugPrint('Initial state load: $e');
       if (mounted) {
         setState(() => _isLoadingState = false);
@@ -76,33 +78,28 @@ class _ControlsScreenState extends State<ControlsScreen> {
     }
   }
 
-  // --- REAL-TIME FIRESTORE LISTENER ---
-  // This is the KEY fix: the UI reacts instantly when ESP32 writes
-  // state back to Firestore — no polling loop needed.
-  void _setupFirestoreListener() {
-    _deviceListener = FirebaseFirestore.instance
-        .collection('devices')
-        .doc(widget.deviceId)
-        .snapshots()
-        .listen(
-      (snapshot) {
-        if (!snapshot.exists || !mounted) return;
+  // --- REAL-TIME DATABASE LISTENER ---
+  void _setupRealtimeDatabaseListener() {
+    final databaseRef = FirebaseDatabase.instance
+        .ref('devices/${widget.deviceId}/actuator');
 
-        final data = snapshot.data();
+    _deviceListener = databaseRef.onValue.listen(
+      (DatabaseEvent event) {
+        if (!event.snapshot.exists || !mounted) return;
+
+        final data = event.snapshot.value as Map<dynamic, dynamic>?;
         if (data == null) return;
 
-        final actuator = data['actuator'] as Map<String, dynamic>?;
-        final state = actuator?['state'] as String?;
+        final state = data['state'] as String?;
 
-        // Only update UI on stable final states (extended / retracted)
-        // Ignore moving_extend / moving_retract — those are in-progress
+        // Only update UI on stable final states
         if (state == 'extended' || state == 'retracted') {
           final newExtended = state == 'extended';
 
           if (_isRodExtended != newExtended) {
             setState(() {
               _isRodExtended = newExtended;
-              _isCommandProcessing = false; // movement confirmed complete
+              _isCommandProcessing = false;
               _calculatePower();
             });
 
@@ -119,21 +116,18 @@ class _ControlsScreenState extends State<ControlsScreen> {
             );
           }
         } else if (state == 'moving_extend' || state == 'moving_retract') {
-          // ESP32 confirmed it started moving — show processing state
           if (!_isCommandProcessing && mounted) {
             setState(() => _isCommandProcessing = true);
           }
         }
       },
       onError: (error) {
-        debugPrint('Firestore listener error: $error');
+        debugPrint('Realtime Database listener error: $error');
       },
     );
   }
 
   // --- START 60-SECOND UI COOLDOWN ---
-  // Prevents the user from spamming commands while ESP32 is moving.
-  // The button stays locked for 60s after a command is sent.
   void _startCooldown() {
     _cooldownTimer?.cancel();
     setState(() => _cooldownRemainingSeconds = 60);
@@ -148,8 +142,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
         if (_cooldownRemainingSeconds <= 0) {
           _cooldownRemainingSeconds = 0;
           timer.cancel();
-          // If we're still in processing state after 60s but Firestore
-          // hasn't confirmed, release the lock gracefully
           if (_isCommandProcessing) {
             _isCommandProcessing = false;
           }
@@ -160,20 +152,18 @@ class _ControlsScreenState extends State<ControlsScreen> {
 
   // --- SEND ACTUATOR COMMAND ---
   Future<void> _handleActuatorControl(bool extend) async {
-    // Blocked during cooldown or active processing
     if (_isCoolingDown || _isCommandProcessing) return;
 
     setState(() => _isCommandProcessing = true);
 
     try {
-      if (extend) {
-        await extend_actuator(deviceId: widget.deviceId);
-      } else {
-        await retract_actuator(deviceId: widget.deviceId);
-      }
+      await FirebaseDatabase.instance
+          .ref('devices/${widget.deviceId}/actuator')
+          .update({
+        'target': extend ? 'extended' : 'retracted',
+        'lastCommandAt': ServerValue.timestamp,
+      });
 
-      // Command written to Firestore — start cooldown immediately
-      // UI will update automatically when ESP32 writes back the new state
       _startCooldown();
 
       if (mounted) {
@@ -191,7 +181,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
       }
     } catch (e) {
       debugPrint('Actuator control error: $e');
-      // Release lock on error
       setState(() => _isCommandProcessing = false);
 
       if (mounted) {
@@ -226,7 +215,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
             fanPower = 450;
             break;
           default:
-            fanPower = 300; // Auto
+            fanPower = 300;
         }
         newPower += (heaterPower + fanPower);
       } else {
@@ -314,8 +303,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
     return '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
   }
 
-  void _showConfirmation(
-      String title, String action, VoidCallback onConfirm) {
+  void _showConfirmation(String title, String action, VoidCallback onConfirm) {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -323,13 +311,11 @@ class _ControlsScreenState extends State<ControlsScreen> {
             style: const TextStyle(
                 fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
         content: Text('Are you sure you want to $action?'),
-        shape:
-            RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child:
-                const Text('Cancel', style: TextStyle(color: Colors.grey)),
+            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(
@@ -341,8 +327,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
               Navigator.pop(context);
               onConfirm();
             },
-            child: const Text('Confirm',
-                style: TextStyle(color: Colors.white)),
+            child: const Text('Confirm', style: TextStyle(color: Colors.white)),
           ),
         ],
       ),
@@ -355,8 +340,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
     final double padding = size.width * 0.05;
     bool isRunning = _isDryingSystemOn && _selectedFanTimer != null;
 
-    // Determine the rod button's effective disabled state
-    // Locked if: drying system is on, OR currently in cooldown/processing
     final bool rodButtonLocked =
         _isDryingSystemOn || _isCoolingDown || _isCommandProcessing;
 
@@ -370,8 +353,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
               CircularProgressIndicator(color: Color(0xFF2962FF)),
               SizedBox(height: 16),
               Text('Loading device state...',
-                  style:
-                      TextStyle(color: Color(0xFF5A6175), fontSize: 16)),
+                  style: TextStyle(color: Color(0xFF5A6175), fontSize: 16)),
             ],
           ),
         ),
@@ -386,7 +368,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // --- HEADER ---
               const Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -405,8 +386,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
               ),
               const SizedBox(height: 28),
 
-              // --- COOLDOWN BANNER ---
-              // Shows a progress indicator while the actuator is moving
               if (_isCoolingDown) ...[
                 Container(
                   width: double.infinity,
@@ -416,8 +395,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
                     color: const Color(0xFF2962FF).withOpacity(0.08),
                     borderRadius: BorderRadius.circular(16),
                     border: Border.all(
-                        color:
-                            const Color(0xFF2962FF).withOpacity(0.3)),
+                        color: const Color(0xFF2962FF).withOpacity(0.3)),
                   ),
                   child: Row(
                     children: [
@@ -448,7 +426,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
                 const SizedBox(height: 16),
               ],
 
-              // --- MAIN TOGGLES ---
               GridView.count(
                 shrinkWrap: true,
                 physics: const NeverScrollableScrollPhysics(),
@@ -457,7 +434,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
                 mainAxisSpacing: 16,
                 childAspectRatio: 1.0,
                 children: [
-                  // ROD CONTROL
                   _buildToggleCard(
                     title: 'Extend Rod',
                     activeTitle: 'Retract Rod',
@@ -488,7 +464,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
                     },
                   ),
 
-                  // DRYING SYSTEM
                   _buildToggleCard(
                     title: 'Drying System',
                     activeTitle: 'Drying System',
@@ -520,7 +495,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
 
               const SizedBox(height: 32),
 
-              // --- SETTINGS (locked if system off) ---
               Opacity(
                 opacity: _isDryingSystemOn ? 1.0 : 0.5,
                 child: AbsorbPointer(
@@ -585,7 +559,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
 
               const SizedBox(height: 32),
 
-              // --- SYSTEM STATUS ---
               const Text('System Status',
                   style: TextStyle(
                       fontSize: 16,
@@ -608,7 +581,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
                 ),
                 child: Column(
                   children: [
-                    // LCD DISPLAY
                     Container(
                       width: double.infinity,
                       padding: const EdgeInsets.symmetric(vertical: 30),
@@ -660,19 +632,16 @@ class _ControlsScreenState extends State<ControlsScreen> {
                               padding: const EdgeInsets.symmetric(
                                   horizontal: 14, vertical: 6),
                               decoration: BoxDecoration(
-                                color: const Color(0xFF00E676)
-                                    .withOpacity(0.2),
+                                color: const Color(0xFF00E676).withOpacity(0.2),
                                 borderRadius: BorderRadius.circular(20),
                                 border: Border.all(
-                                    color: const Color(0xFF00E676),
-                                    width: 1.5),
+                                    color: const Color(0xFF00E676), width: 1.5),
                               ),
                               child: Row(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
                                   const Icon(Icons.circle,
-                                      size: 8,
-                                      color: Color(0xFF00E676)),
+                                      size: 8, color: Color(0xFF00E676)),
                                   const SizedBox(width: 8),
                                   Text(
                                     isRunning ? 'RUNNING' : 'MOVING',
@@ -737,24 +706,18 @@ class _ControlsScreenState extends State<ControlsScreen> {
       children: [
         Text(label,
             style: const TextStyle(
-                color: Colors.grey,
-                fontSize: 13,
-                fontWeight: FontWeight.w500)),
+                color: Colors.grey, fontSize: 13, fontWeight: FontWeight.w500)),
         isAnimated
             ? AnimatedSwitcher(
                 duration: const Duration(milliseconds: 300),
                 child: Text(value,
                     key: ValueKey<String>(value),
                     style: TextStyle(
-                        color: color,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 14)),
+                        color: color, fontWeight: FontWeight.bold, fontSize: 14)),
               )
             : Text(value,
                 style: TextStyle(
-                    color: color,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 14)),
+                    color: color, fontWeight: FontWeight.bold, fontSize: 14)),
       ],
     );
   }
@@ -778,9 +741,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
     final Color subTextColor =
         isOn ? Colors.white.withOpacity(0.7) : Colors.grey;
 
-    // Show locked state when disabled and not loading
     if (isDisabled && !isLoading) {
-      // Special case: show cooldown countdown on the card
       if (cooldownSeconds != null && cooldownSeconds > 0) {
         return Container(
           padding: const EdgeInsets.all(20),
@@ -894,31 +855,28 @@ class _ControlsScreenState extends State<ControlsScreen> {
                       height: 24,
                       child: CircularProgressIndicator(
                         strokeWidth: 2,
-                        valueColor:
-                            AlwaysStoppedAnimation<Color>(iconColor),
+                        valueColor: AlwaysStoppedAnimation<Color>(iconColor),
                       ),
                     )
                   : Icon(icon, color: iconColor, size: 24),
             ),
-            Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    isLoading ? 'SENDING...' : (isOn ? 'ON' : 'OFF'),
-                    style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.bold,
-                        color: subTextColor),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    isOn && activeTitle != null ? activeTitle : title,
-                    style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                        color: textColor),
-                  ),
-                ]),
+            Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(
+                isLoading ? 'SENDING...' : (isOn ? 'ON' : 'OFF'),
+                style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                    color: subTextColor),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                isOn && activeTitle != null ? activeTitle : title,
+                style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                    color: textColor),
+              ),
+            ]),
           ],
         ),
       ),
@@ -936,9 +894,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
           margin: const EdgeInsets.symmetric(horizontal: 6),
           padding: const EdgeInsets.symmetric(vertical: 14),
           decoration: BoxDecoration(
-            color: isSelected
-                ? const Color(0xFF2962FF)
-                : Colors.grey[100],
+            color: isSelected ? const Color(0xFF2962FF) : Colors.grey[100],
             borderRadius: BorderRadius.circular(30),
             boxShadow: isSelected
                 ? [
