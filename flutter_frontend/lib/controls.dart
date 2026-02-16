@@ -39,8 +39,13 @@ class _ControlsScreenState extends State<ControlsScreen> {
   @override
   void initState() {
     super.initState();
-    _initializeActuatorState();
-    _setupRealtimeDatabaseListener();
+    // Prevent loading if no device, but don't crash
+    if (widget.deviceId.isNotEmpty) {
+      _initializeActuatorState();
+      _setupRealtimeDatabaseListener();
+    } else {
+      setState(() => _isLoadingState = false);
+    }
   }
 
   @override
@@ -51,8 +56,28 @@ class _ControlsScreenState extends State<ControlsScreen> {
     super.dispose();
   }
 
+  // --- NEW: NO DEVICE WARNING MODAL ---
+  void _showNoDeviceDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("No Device Paired", 
+            style: TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
+        content: const Text("This function is disabled because no device is paired. Please go to Settings to connect a device."),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text("OK", style: TextStyle(color: Color(0xFF2962FF))),
+          ),
+        ],
+      ),
+    );
+  }
+
   // --- LOAD INITIAL STATE (one-time read) ---
   Future<void> _initializeActuatorState() async {
+    if (widget.deviceId.isEmpty) return;
     try {
       final snapshot = await FirebaseDatabase.instance
           .ref('devices/${widget.deviceId}/actuator/state')
@@ -80,6 +105,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
 
   // --- REAL-TIME DATABASE LISTENER ---
   void _setupRealtimeDatabaseListener() {
+    if (widget.deviceId.isEmpty) return;
     final databaseRef = FirebaseDatabase.instance
         .ref('devices/${widget.deviceId}/actuator');
 
@@ -152,6 +178,12 @@ class _ControlsScreenState extends State<ControlsScreen> {
 
   // --- SEND ACTUATOR COMMAND ---
   Future<void> _handleActuatorControl(bool extend) async {
+    // NEW: Check for device pair
+    if (widget.deviceId.isEmpty) {
+      _showNoDeviceDialog();
+      return;
+    }
+
     if (_isCoolingDown || _isCommandProcessing) return;
 
     setState(() => _isCommandProcessing = true);
@@ -231,6 +263,12 @@ class _ControlsScreenState extends State<ControlsScreen> {
   }
 
   void _toggleDryingPower() {
+    // NEW: Check for device pair
+    if (widget.deviceId.isEmpty) {
+      _showNoDeviceDialog();
+      return;
+    }
+
     setState(() {
       _isDryingSystemOn = !_isDryingSystemOn;
       if (!_isDryingSystemOn) {
@@ -244,6 +282,12 @@ class _ControlsScreenState extends State<ControlsScreen> {
   }
 
   void _handleTimerSelection(String duration) {
+    // NEW: Check for device pair
+    if (widget.deviceId.isEmpty) {
+      _showNoDeviceDialog();
+      return;
+    }
+
     if (_selectedFanTimer != null && _selectedFanTimer != duration) {
       _showConfirmation('Change Timer', 'change the timer to $duration', () {
         _startTimerSequence(duration);
@@ -280,6 +324,12 @@ class _ControlsScreenState extends State<ControlsScreen> {
   }
 
   void _handleFanModeSelection(String mode) {
+    // NEW: Check for device pair
+    if (widget.deviceId.isEmpty) {
+      _showNoDeviceDialog();
+      return;
+    }
+
     setState(() {
       _selectedFanMode = mode;
       _calculatePower();
@@ -446,6 +496,12 @@ class _ControlsScreenState extends State<ControlsScreen> {
                         ? _cooldownRemainingSeconds
                         : null,
                     onTap: () {
+                      // NEW: Check pair first
+                      if (widget.deviceId.isEmpty) {
+                        _showNoDeviceDialog();
+                        return;
+                      }
+
                       if (_isDryingSystemOn) {
                         ScaffoldMessenger.of(context).showSnackBar(
                           const SnackBar(
@@ -472,6 +528,12 @@ class _ControlsScreenState extends State<ControlsScreen> {
                     activeColor: const Color(0xFFFF6D00),
                     isDisabled: _isRodExtended || _isCommandProcessing,
                     onTap: () {
+                      // NEW: Check pair first
+                      if (widget.deviceId.isEmpty) {
+                        _showNoDeviceDialog();
+                        return;
+                      }
+
                       if (_isRodExtended) {
                         ScaffoldMessenger.of(context).showSnackBar(
                           const SnackBar(
@@ -615,9 +677,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
                           Text(
                             isRunning
                                 ? _formatTime(_remainingSeconds)
-                                : (_isCoolingDown
-                                    ? _formatTime(_cooldownRemainingSeconds)
-                                    : '--:--'),
+                                : '--:--',
                             style: const TextStyle(
                                 fontSize: 56,
                                 fontWeight: FontWeight.bold,
@@ -626,7 +686,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
                                 letterSpacing: 2.0,
                                 height: 1.0),
                           ),
-                          if (isRunning || _isCoolingDown) ...[
+                          if (isRunning) ...[
                             const SizedBox(height: 16),
                             Container(
                               padding: const EdgeInsets.symmetric(
@@ -644,7 +704,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
                                       size: 8, color: Color(0xFF00E676)),
                                   const SizedBox(width: 8),
                                   Text(
-                                    isRunning ? 'RUNNING' : 'MOVING',
+                                    'RUNNING',
                                     style: const TextStyle(
                                         color: Color(0xFF00E676),
                                         fontSize: 11,

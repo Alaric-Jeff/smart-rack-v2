@@ -1,4 +1,4 @@
-//main.dart
+// main.dart
 
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart'; 
@@ -6,12 +6,14 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:shared_preferences/shared_preferences.dart'; // Add shared_preferences
 import 'firebase_options.dart';
 
 import 'signup.dart';
 import 'terms_and_condtions.dart';
 import 'home.dart';
 import 'otp_screen.dart';
+import 'onboarding_screen.dart'; // Import your onboarding screen
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -20,21 +22,41 @@ void main() async {
     options: DefaultFirebaseOptions.currentPlatform,
   );
 
-  runApp(const SmartRackApp());
+  // --- Check Onboarding Status ---
+  final prefs = await SharedPreferences.getInstance();
+  final bool showHome = prefs.getBool('showHome') ?? false;
+
+  // Pass the showHome value to your app
+  runApp(SmartRackApp(showHome: showHome));
 }
 
 class SmartRackApp extends StatelessWidget {
-  const SmartRackApp({super.key});  
+  final bool showHome; // Add this field
+
+  const SmartRackApp({super.key, required this.showHome}); // Update constructor
 
   @override
   Widget build(BuildContext context) {
 
     final user = FirebaseAuth.instance.currentUser;
 
+    // Logic for initial screen:
+    Widget startScreen;
+    if (user != null) {
+      // User is logged in -> Go straight to Home
+      startScreen = const HomeScreen();
+    } else if (showHome) {
+      // User has seen onboarding but is NOT logged in -> Go to Login
+      startScreen = const LoginPage();
+    } else {
+      // User has NOT seen onboarding -> Go to Onboarding
+      startScreen = const OnboardingScreen();
+    }
+
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       theme: ThemeData(fontFamily: 'sans-serif'),
-      home: user == null ? const LoginPage() : const HomeScreen() 
+      home: startScreen, 
     );
   }
 }

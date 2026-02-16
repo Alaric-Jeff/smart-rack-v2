@@ -67,6 +67,25 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  // --- NEW: NO DEVICE WARNING MODAL ---
+  void _showNoDeviceDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("No Device Paired", 
+            style: TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
+        content: const Text("This feature requires a connected device. Please pair a Smart Rack in the Settings or Home screen."),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text("OK", style: TextStyle(color: Color(0xFF2962FF))),
+          ),
+        ],
+      ),
+    );
+  }
+
   List<Widget> _getPages() {
     return [
       DashboardContent(
@@ -109,6 +128,12 @@ class _HomeScreenState extends State<HomeScreen> {
           currentIndex: _selectedIndex,
           
           onTap: (index) {
+            // NEW: Check for device before navigating to Controls (1) or Alerts (3)
+            if ((index == 1 || index == 3) && (_currentDeviceId == null || _currentDeviceId!.isEmpty)) {
+              _showNoDeviceDialog();
+              return; // Stop navigation
+            }
+
             if (index == 2) {
               Navigator.push(
                 context, 

@@ -5,9 +5,9 @@ import 'package:http/http.dart' as http;
 Future<void> deleteImage({
   required String userId
 }) async {
-  final _db = FirebaseFirestore.instance;
+  final db = FirebaseFirestore.instance;
 
-  final userRef = await _db.collection('users').doc(userId).get();
+  final userRef = await db.collection('users').doc(userId).get();
 
   if(!userRef.exists){
     throw Exception('User not found');
@@ -45,7 +45,7 @@ Future<void> deleteImage({
       throw Exception('Delete failed: ${result['message'] ?? 'Unknown error'}');
     }
 
-    await _db.collection('users').doc(userId).set({
+    await db.collection('users').doc(userId).set({
       'image_public_id': FieldValue.delete(),
       'image_url': FieldValue.delete(),
       'updated_at': FieldValue.serverTimestamp(),

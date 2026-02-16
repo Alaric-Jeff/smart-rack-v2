@@ -625,7 +625,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                       vertical: 12,
                     ),
                   ),
-                  value: _selectedDeactivationReason,
+                  initialValue: _selectedDeactivationReason,
                   items: _deactivationReasons.map((reason) {
                     return DropdownMenuItem(
                       value: reason,
