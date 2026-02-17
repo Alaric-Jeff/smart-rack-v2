@@ -28,7 +28,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
 
   // --- FAN STATE ---
   bool _isDryingSystemOn = false;
-  String _selectedFanMode = 'low'; // RTDB values: 'low', 'mid', 'high'
+  String _selectedFanMode = 'low';
   String? _selectedFanTimer;
   bool _isFanCommandProcessing = false;
 
@@ -62,9 +62,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
     super.dispose();
   }
 
-  // ============================================================
-  // NO DEVICE DIALOG
-  // ============================================================
   void _showNoDeviceDialog() {
     showDialog(
       context: context,
@@ -74,22 +71,17 @@ class _ControlsScreenState extends State<ControlsScreen> {
                 fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
         content: const Text(
             "This function is disabled because no device is paired. Please go to Settings to connect a device."),
-        shape:
-            RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child:
-                const Text("OK", style: TextStyle(color: Color(0xFF2962FF))),
+            child: const Text("OK", style: TextStyle(color: Color(0xFF2962FF))),
           ),
         ],
       ),
     );
   }
 
-  // ============================================================
-  // ACTUATOR - INIT & LISTENER
-  // ============================================================
   Future<void> _initializeActuatorState() async {
     if (widget.deviceId.isEmpty) return;
     try {
@@ -127,23 +119,16 @@ class _ControlsScreenState extends State<ControlsScreen> {
         if (data == null) return;
 
         final state = data['state'] as String?;
-        // FIX: Read commandRejected to immediately unlock UI when ESP32
-        // rejects a command. Without this, _isCommandProcessing would stay
-        // true for the full 60s cooldown even though nothing moved.
         final commandRejected = data['commandRejected'] as bool? ?? false;
 
         if (state == 'extended' || state == 'retracted') {
           final newExtended = state == 'extended';
 
           if (commandRejected) {
-            // Command was blocked by ESP32 safety interlock — unlock UI immediately
-            // No snackbar for rejection: notification is handled by the
-            // notifications screen via the notifications/ RTDB node
             setState(() {
               _isCommandProcessing = false;
               _cooldownRemainingSeconds = 0;
               _cooldownTimer?.cancel();
-              // Rod position stays unchanged — rejection means nothing moved
               _isRodExtended = newExtended;
               _calculatePower();
             });
@@ -167,27 +152,16 @@ class _ControlsScreenState extends State<ControlsScreen> {
               ),
             );
           } else {
-            // State confirmed same as before (e.g. rejection reverted to same state)
-            // Still clear processing flag in case it's stuck
             if (_isCommandProcessing) {
-              setState(() {
-                _isCommandProcessing = false;
-              });
+              setState(() => _isCommandProcessing = false);
             }
           }
         }
-        // NOTE: ESP32 only ever writes "extended" or "retracted" for state.
-        // "moving_extend" / "moving_retract" are not written by the firmware.
-        // _isCommandProcessing is set optimistically before the Firebase write
-        // in _handleActuatorControl and cleared here on confirmation.
       },
       onError: (error) => debugPrint('Actuator listener error: $error'),
     );
   }
 
-  // ============================================================
-  // FAN - INIT & LISTENER
-  // ============================================================
   Future<void> _initializeFanState() async {
     if (widget.deviceId.isEmpty) return;
     try {
@@ -202,7 +176,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
           final speed = data['speed'] as String?;
           setState(() {
             _isDryingSystemOn = state == 'on';
-            // Only accept valid speed values, default to 'low'
             _selectedFanMode = _validateSpeed(speed);
             _calculatePower();
           });
@@ -213,6 +186,15 @@ class _ControlsScreenState extends State<ControlsScreen> {
     }
   }
 
+  // ============================================================
+  // FAN LISTENER - FIXED
+  // Removed redundant _stopTimer() call. Timer state is managed
+  // locally by the three functions that initiate fan-off actions:
+  //   1. _toggleDryingPower (manual toggle)
+  //   2. _startTimerSequence timer expiry (auto-off at 0:00)
+  //   3. _stopTimerAndTurnOffFans (red stop button)
+  // The listener only needs to sync _isDryingSystemOn state.
+  // ============================================================
   void _setupFanListener() {
     if (widget.deviceId.isEmpty) return;
 
@@ -229,18 +211,18 @@ class _ControlsScreenState extends State<ControlsScreen> {
         final state = data['state'] as String?;
         final speed = data['speed'] as String?;
 
-        // Only update UI when ESP32 confirms the state change.
-        // rejectFanCommandAndRevert() writes state:"off" so this
-        // branch also fires on rejection, clearing _isFanCommandProcessing.
         if (state == 'on' || state == 'off') {
           setState(() {
             _isDryingSystemOn = state == 'on';
-            // Validate and apply speed from ESP32 confirmation
+            
             if (speed != null) {
               _selectedFanMode = _validateSpeed(speed);
             }
             _isFanCommandProcessing = false;
             _calculatePower();
+            
+            // REMOVED: redundant _stopTimer() call
+            // Timer cleanup is handled by whoever initiated the off command
           });
         }
       },
@@ -248,18 +230,14 @@ class _ControlsScreenState extends State<ControlsScreen> {
     );
   }
 
-  // Validates RTDB speed value - ensures only valid values are used
   String _validateSpeed(String? speed) {
     const validSpeeds = ['low', 'mid', 'high'];
     if (speed != null && validSpeeds.contains(speed)) {
       return speed;
     }
-    return 'low'; // Safe default
+    return 'low';
   }
 
-  // ============================================================
-  // ACTUATOR CONTROL
-  // ============================================================
   void _startCooldown() {
     _cooldownTimer?.cancel();
     setState(() => _cooldownRemainingSeconds = 60);
@@ -294,7 +272,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
           .ref('devices/${widget.deviceId}/actuator')
           .update({
         'target': extend ? 'extended' : 'retracted',
-        'commandRejected': false, // Reset rejection flag on new command
+        'commandRejected': false,
         'lastCommandAt': ServerValue.timestamp,
       });
 
@@ -326,9 +304,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
     }
   }
 
-  // ============================================================
-  // FAN ON/OFF CONTROL
-  // ============================================================
   Future<void> _toggleDryingPower() async {
     if (widget.deviceId.isEmpty) {
       _showNoDeviceDialog();
@@ -339,23 +314,23 @@ class _ControlsScreenState extends State<ControlsScreen> {
 
     try {
       if (_isDryingSystemOn) {
-        // Turn OFF - send target off, keep current speed in RTDB
+        // Turning OFF - clear timer UI state immediately before Firebase write
+        _stopTimer();
+        
         await FirebaseDatabase.instance
             .ref('devices/${widget.deviceId}/fans')
             .update({
           'target': 'off',
-          'commandRejected': false, // FIX #1: Reset stale rejection flag
+          'commandRejected': false,
           'lastCommandAt': ServerValue.timestamp,
         });
-        _stopTimer();
       } else {
-        // Turn ON - send target on with current speed selection
         await FirebaseDatabase.instance
             .ref('devices/${widget.deviceId}/fans')
             .update({
           'target': 'on',
           'speed': _selectedFanMode,
-          'commandRejected': false, // FIX #1: Reset stale rejection flag
+          'commandRejected': false,
           'lastCommandAt': ServerValue.timestamp,
         });
       }
@@ -374,29 +349,22 @@ class _ControlsScreenState extends State<ControlsScreen> {
     }
   }
 
-  // ============================================================
-  // FAN SPEED CONTROL - STABLE
-  // ============================================================
   Future<void> _handleFanModeSelection(String rtdbValue) async {
     if (widget.deviceId.isEmpty) {
       _showNoDeviceDialog();
       return;
     }
 
-    // Validate before doing anything
     final validatedSpeed = _validateSpeed(rtdbValue);
-
-    // Optimistically update UI immediately for snappy feel
     setState(() => _selectedFanMode = validatedSpeed);
 
     try {
       final Map<String, dynamic> update = {
         'speed': validatedSpeed,
-        'commandRejected': false, // FIX #1: Reset stale rejection flag
+        'commandRejected': false,
         'lastCommandAt': ServerValue.timestamp,
       };
 
-      // If fan is ON, also send target to ensure ESP32 applies speed
       if (_isDryingSystemOn) {
         update['target'] = 'on';
       }
@@ -407,10 +375,8 @@ class _ControlsScreenState extends State<ControlsScreen> {
 
       debugPrint('[FAN SPEED] Sent to Firebase: $validatedSpeed');
     } catch (e) {
-      // Revert optimistic UI update on failure
       debugPrint('Fan mode error: $e');
       if (mounted) {
-        // Re-fetch current state from Firebase to restore correct value
         final snapshot = await FirebaseDatabase.instance
             .ref('devices/${widget.deviceId}/fans/speed')
             .get();
@@ -430,11 +396,22 @@ class _ControlsScreenState extends State<ControlsScreen> {
   }
 
   // ============================================================
-  // TIMER CONTROL
+  // TIMER CONTROL - FIXED
   // ============================================================
   void _handleTimerSelection(String duration) {
     if (widget.deviceId.isEmpty) {
       _showNoDeviceDialog();
+      return;
+    }
+
+    if (!_isDryingSystemOn) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Turn ON fans before setting a timer!'),
+          backgroundColor: Colors.orange,
+          duration: Duration(seconds: 2),
+        ),
+      );
       return;
     }
 
@@ -445,7 +422,11 @@ class _ControlsScreenState extends State<ControlsScreen> {
       return;
     }
     if (_selectedFanTimer == duration) {
-      _showConfirmation('Stop Timer', 'cancel the current timer', _stopTimer);
+      _showConfirmation(
+        'Stop Timer',
+        'stop the timer and turn off the fans',
+        _stopTimerAndTurnOffFans,  // FIX: Now actually turns fans off
+      );
       return;
     }
     _startTimerSequence(duration);
@@ -458,6 +439,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
     setState(() {
       _selectedFanTimer = duration;
       _remainingSeconds = totalSeconds;
+      _calculatePower();
     });
 
     _dryingTimer?.cancel();
@@ -466,22 +448,80 @@ class _ControlsScreenState extends State<ControlsScreen> {
         timer.cancel();
         return;
       }
-      if (_remainingSeconds > 0) {
-        setState(() => _remainingSeconds--);
-      } else {
-        // Timer done - turn fans off via Firebase
-        _stopTimer();
+      
+      setState(() {
+        _remainingSeconds--;
+      });
+
+      if (_remainingSeconds <= 0) {
+        // Timer reached 0:00 — clear UI state then turn fans off via Firebase
+        timer.cancel();
+        _stopTimer();  // Clear UI state locally
+        
         FirebaseDatabase.instance
             .ref('devices/${widget.deviceId}/fans')
             .update({
           'target': 'off',
-          'commandRejected': false, // FIX #1: Reset stale rejection flag
+          'commandRejected': false,
           'lastCommandAt': ServerValue.timestamp,
+        }).then((_) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('⏱️ Timer finished — fans turned off'),
+                backgroundColor: Colors.blue,
+                duration: Duration(seconds: 3),
+              ),
+            );
+          }
+        }).catchError((e) {
+          debugPrint('Timer auto-off error: $e');
         });
       }
     });
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('⏱️ Timer set for $minutes minutes'),
+          backgroundColor: Colors.green,
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    }
   }
 
+  // FIX: New function for red stop button
+  // Clears timer UI state AND sends Firebase command to turn fans off
+  void _stopTimerAndTurnOffFans() {
+    _stopTimer();  // Clear local timer UI state
+    
+    FirebaseDatabase.instance
+        .ref('devices/${widget.deviceId}/fans')
+        .update({
+      'target': 'off',
+      'commandRejected': false,
+      'lastCommandAt': ServerValue.timestamp,
+    }).then((_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('⏹️ Timer stopped — fans turned off'),
+            backgroundColor: Colors.blue,
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+    }).catchError((e) {
+      debugPrint('Stop timer error: $e');
+    });
+  }
+
+  // Clears only local timer UI state — does NOT touch Firebase
+  // Called by:
+  //   1. _toggleDryingPower (before Firebase write)
+  //   2. _startTimerSequence timer expiry (before Firebase write)
+  //   3. _stopTimerAndTurnOffFans (before Firebase write)
   void _stopTimer() {
     _dryingTimer?.cancel();
     setState(() {
@@ -491,9 +531,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
     });
   }
 
-  // ============================================================
-  // POWER CALCULATION
-  // ============================================================
   void _calculatePower() {
     int newPower = 2;
     if (_isRodExtended) newPower += 5;
@@ -523,7 +560,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
     return '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
   }
 
-  // Maps RTDB speed value to display label
   String _speedToLabel(String rtdbValue) {
     switch (rtdbValue) {
       case 'low':
@@ -537,8 +573,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
     }
   }
 
-  void _showConfirmation(
-      String title, String action, VoidCallback onConfirm) {
+  void _showConfirmation(String title, String action, VoidCallback onConfirm) {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -546,13 +581,11 @@ class _ControlsScreenState extends State<ControlsScreen> {
             style: const TextStyle(
                 fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
         content: Text('Are you sure you want to $action?'),
-        shape:
-            RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel',
-                style: TextStyle(color: Colors.grey)),
+            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(
@@ -564,17 +597,13 @@ class _ControlsScreenState extends State<ControlsScreen> {
               Navigator.pop(context);
               onConfirm();
             },
-            child: const Text('Confirm',
-                style: TextStyle(color: Colors.white)),
+            child: const Text('Confirm', style: TextStyle(color: Colors.white)),
           ),
         ],
       ),
     );
   }
 
-  // ============================================================
-  // BUILD
-  // ============================================================
   @override
   Widget build(BuildContext context) {
     final size = MediaQuery.of(context).size;
@@ -594,8 +623,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
               CircularProgressIndicator(color: Color(0xFF2962FF)),
               SizedBox(height: 16),
               Text('Loading device state...',
-                  style:
-                      TextStyle(color: Color(0xFF5A6175), fontSize: 16)),
+                  style: TextStyle(color: Color(0xFF5A6175), fontSize: 16)),
             ],
           ),
         ),
@@ -628,12 +656,11 @@ class _ControlsScreenState extends State<ControlsScreen> {
               ),
               const SizedBox(height: 28),
 
-              // Cooldown Banner
               if (_isCoolingDown) ...[
                 Container(
                   width: double.infinity,
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 16, vertical: 12),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                   decoration: BoxDecoration(
                     color: const Color(0xFF2962FF).withOpacity(0.08),
                     borderRadius: BorderRadius.circular(16),
@@ -669,7 +696,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
                 const SizedBox(height: 16),
               ],
 
-              // Control Cards
               GridView.count(
                 shrinkWrap: true,
                 physics: const NeverScrollableScrollPhysics(),
@@ -737,9 +763,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
                       }
                       _showConfirmation(
                         'Drying System',
-                        _isDryingSystemOn
-                            ? 'Turn OFF fans'
-                            : 'Turn ON fans',
+                        _isDryingSystemOn ? 'Turn OFF fans' : 'Turn ON fans',
                         _toggleDryingPower,
                       );
                     },
@@ -749,7 +773,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
 
               const SizedBox(height: 32),
 
-              // Fan Settings
               Opacity(
                 opacity: _isDryingSystemOn ? 1.0 : 0.5,
                 child: AbsorbPointer(
@@ -776,8 +799,11 @@ class _ControlsScreenState extends State<ControlsScreen> {
                           Padding(
                             padding: const EdgeInsets.only(left: 8.0),
                             child: GestureDetector(
-                              onTap: () => _showConfirmation('Stop Timer',
-                                  'stop the fan', _stopTimer),
+                              onTap: () => _showConfirmation(
+                                'Stop Timer',
+                                'stop the timer and turn off the fans',
+                                _stopTimerAndTurnOffFans,  // FIX: Now actually stops fans
+                              ),
                               child: Container(
                                 padding: const EdgeInsets.all(12),
                                 decoration: BoxDecoration(
@@ -797,25 +823,10 @@ class _ControlsScreenState extends State<ControlsScreen> {
                               fontWeight: FontWeight.bold,
                               color: Color(0xFF1E2339))),
                       const SizedBox(height: 16),
-
-                      // ============================================================
-                      // FAN MODE BUTTONS - STABLE
-                      // Uses rtdbValue directly for selection comparison
-                      // No label-to-value mapping confusion
-                      // ============================================================
                       Row(children: [
-                        _buildFanModeButton(
-                          label: 'Low',
-                          rtdbValue: 'low',
-                        ),
-                        _buildFanModeButton(
-                          label: 'Med',
-                          rtdbValue: 'mid',
-                        ),
-                        _buildFanModeButton(
-                          label: 'High',
-                          rtdbValue: 'high',
-                        ),
+                        _buildFanModeButton(label: 'Low', rtdbValue: 'low'),
+                        _buildFanModeButton(label: 'Med', rtdbValue: 'mid'),
+                        _buildFanModeButton(label: 'High', rtdbValue: 'high'),
                       ]),
                     ],
                   ),
@@ -824,7 +835,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
 
               const SizedBox(height: 32),
 
-              // System Status
               const Text('System Status',
                   style: TextStyle(
                       fontSize: 16,
@@ -879,9 +889,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
                           ),
                           const SizedBox(height: 8),
                           Text(
-                            isRunning
-                                ? _formatTime(_remainingSeconds)
-                                : '--:--',
+                            isRunning ? _formatTime(_remainingSeconds) : '--:--',
                             style: const TextStyle(
                                 fontSize: 56,
                                 fontWeight: FontWeight.bold,
@@ -911,15 +919,13 @@ class _ControlsScreenState extends State<ControlsScreen> {
                                 color: const Color(0xFF00E676).withOpacity(0.2),
                                 borderRadius: BorderRadius.circular(20),
                                 border: Border.all(
-                                    color: const Color(0xFF00E676),
-                                    width: 1.5),
+                                    color: const Color(0xFF00E676), width: 1.5),
                               ),
                               child: const Row(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
                                   Icon(Icons.circle,
-                                      size: 8,
-                                      color: Color(0xFF00E676)),
+                                      size: 8, color: Color(0xFF00E676)),
                                   SizedBox(width: 8),
                                   Text(
                                     'RUNNING',
@@ -990,16 +996,10 @@ class _ControlsScreenState extends State<ControlsScreen> {
     );
   }
 
-  // ============================================================
-  // FAN MODE BUTTON - STABLE WIDGET
-  // Compares rtdbValue directly to _selectedFanMode
-  // No label/value mapping confusion
-  // ============================================================
   Widget _buildFanModeButton({
     required String label,
     required String rtdbValue,
   }) {
-    // Direct comparison: rtdbValue ('low', 'mid', 'high') vs _selectedFanMode
     final bool isSelected = _selectedFanMode == rtdbValue;
 
     return Expanded(
@@ -1009,7 +1009,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
             _showNoDeviceDialog();
             return;
           }
-          // Only trigger if selecting a different speed
           if (!isSelected) {
             _handleFanModeSelection(rtdbValue);
           }
@@ -1020,7 +1019,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
           padding: const EdgeInsets.symmetric(vertical: 14),
           decoration: BoxDecoration(
             color: isSelected
-                ? const Color(0xFFFF6D00)  // Orange for fan mode (matches fan card)
+                ? const Color(0xFFFF6D00)
                 : Colors.grey[100],
             borderRadius: BorderRadius.circular(30),
             boxShadow: isSelected
@@ -1047,9 +1046,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
     );
   }
 
-  // ============================================================
-  // SHARED WIDGETS
-  // ============================================================
   Widget _buildStatusRow(String label, String value, Color color,
       {bool isAnimated = false}) {
     return Row(
@@ -1057,9 +1053,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
       children: [
         Text(label,
             style: const TextStyle(
-                color: Colors.grey,
-                fontSize: 13,
-                fontWeight: FontWeight.w500)),
+                color: Colors.grey, fontSize: 13, fontWeight: FontWeight.w500)),
         isAnimated
             ? AnimatedSwitcher(
                 duration: const Duration(milliseconds: 300),
@@ -1072,9 +1066,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
               )
             : Text(value,
                 style: TextStyle(
-                    color: color,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 14)),
+                    color: color, fontWeight: FontWeight.bold, fontSize: 14)),
       ],
     );
   }
@@ -1124,21 +1116,19 @@ class _ControlsScreenState extends State<ControlsScreen> {
                   ),
                 ),
               ),
-              Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('${cooldownSeconds}s',
-                        style: TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.bold,
-                            color: activeColor)),
-                    const SizedBox(height: 4),
-                    Text(isOn ? (activeTitle ?? title) : title,
-                        style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
-                            color: activeColor)),
-                  ]),
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text('${cooldownSeconds}s',
+                    style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                        color: activeColor)),
+                const SizedBox(height: 4),
+                Text(isOn ? (activeTitle ?? title) : title,
+                    style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        color: activeColor)),
+              ]),
             ],
           ),
         );
@@ -1161,21 +1151,19 @@ class _ControlsScreenState extends State<ControlsScreen> {
                   color: Colors.grey[200], shape: BoxShape.circle),
               child: Icon(icon, color: Colors.grey, size: 24),
             ),
-            Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('LOCKED',
-                      style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.grey[400])),
-                  const SizedBox(height: 4),
-                  Text(title,
-                      style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.grey[400])),
-                ]),
+            Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('LOCKED',
+                  style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.grey[400])),
+              const SizedBox(height: 4),
+              Text(title,
+                  style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.grey[400])),
+            ]),
           ],
         ),
       );
@@ -1208,39 +1196,35 @@ class _ControlsScreenState extends State<ControlsScreen> {
           children: [
             Container(
               padding: const EdgeInsets.all(12),
-              decoration:
-                  BoxDecoration(color: iconBg, shape: BoxShape.circle),
+              decoration: BoxDecoration(color: iconBg, shape: BoxShape.circle),
               child: isLoading
                   ? SizedBox(
                       width: 24,
                       height: 24,
                       child: CircularProgressIndicator(
                         strokeWidth: 2,
-                        valueColor:
-                            AlwaysStoppedAnimation<Color>(iconColor),
+                        valueColor: AlwaysStoppedAnimation<Color>(iconColor),
                       ),
                     )
                   : Icon(icon, color: iconColor, size: 24),
             ),
-            Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    isLoading ? 'SENDING...' : (isOn ? 'ON' : 'OFF'),
-                    style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.bold,
-                        color: subTextColor),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    isOn && activeTitle != null ? activeTitle : title,
-                    style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                        color: textColor),
-                  ),
-                ]),
+            Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(
+                isLoading ? 'SENDING...' : (isOn ? 'ON' : 'OFF'),
+                style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                    color: subTextColor),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                isOn && activeTitle != null ? activeTitle : title,
+                style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                    color: textColor),
+              ),
+            ]),
           ],
         ),
       ),
@@ -1258,8 +1242,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
           margin: const EdgeInsets.symmetric(horizontal: 6),
           padding: const EdgeInsets.symmetric(vertical: 14),
           decoration: BoxDecoration(
-            color:
-                isSelected ? const Color(0xFF2962FF) : Colors.grey[100],
+            color: isSelected ? const Color(0xFF2962FF) : Colors.grey[100],
             borderRadius: BorderRadius.circular(30),
             boxShadow: isSelected
                 ? [
