@@ -31,13 +31,19 @@ class _ControlsScreenState extends State<ControlsScreen> {
   String _selectedFanMode = 'low';
   String? _selectedFanTimer;
   bool _isFanCommandProcessing = false;
+  
+  // FIX: Prevents listener from reverting optimistic UI update
+  bool _suppressListenerUpdate = false;
+  
+  // --- FAN COOLDOWN (prevents rapid double-taps) ---
+  Timer? _fanCooldownTimer;
+  int _fanCooldownRemainingSeconds = 0;
+  bool get _isFanCoolingDown => _fanCooldownRemainingSeconds > 0;
 
   // --- RTDB-BACKED TIMER ---
-  // Source of truth: devices/{id}/fans/timerEndsAt (Unix ms, null = no timer)
-  // _remainingSeconds is derived locally from timerEndsAt for display only.
-  Timer? _dryingTimer;         // local tick timer for countdown display
+  Timer? _dryingTimer;         // Local tick timer for countdown display
   int _remainingSeconds = 0;
-  int? _timerEndsAt;           // mirrors Firebase timerEndsAt
+  int? _timerEndsAt;           // Timestamp (ms) from Firebase
 
   // --- FIREBASE LISTENERS ---
   StreamSubscription<DatabaseEvent>? _actuatorListener;
@@ -60,6 +66,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
   void dispose() {
     _dryingTimer?.cancel();
     _cooldownTimer?.cancel();
+    _fanCooldownTimer?.cancel();
     _actuatorListener?.cancel();
     _fanListener?.cancel();
     super.dispose();
@@ -201,9 +208,10 @@ class _ControlsScreenState extends State<ControlsScreen> {
             final remainingMs = endsAt - nowMs;
 
             if (remainingMs > 0) {
+              // Timer is valid: Resume countdown
               _restoreTimer(endsAt, remainingMs);
             } else {
-              // Timer already expired while app was closed — clear it
+              // Timer expired while we were away, clear it
               _clearRtdbTimer();
             }
           }
@@ -231,9 +239,21 @@ class _ControlsScreenState extends State<ControlsScreen> {
         final speed = data['speed'] as String?;
         final timerEndsAt = data['timerEndsAt'];
 
-        // Sync fan on/off state
         if (state == 'on' || state == 'off') {
           final newOn = state == 'on';
+
+          // --- OPTIMISTIC UI LOGIC ---
+          if (_suppressListenerUpdate) {
+            if (newOn == _isDryingSystemOn) {
+              // Confirmation received! Stop suppressing.
+              _suppressListenerUpdate = false;
+            } else {
+              // Stale data arrived; ignore it to prevent button flickering
+              return; 
+            }
+          } 
+
+          // Standard Update
           setState(() {
             _isDryingSystemOn = newOn;
             if (speed != null) {
@@ -246,11 +266,9 @@ class _ControlsScreenState extends State<ControlsScreen> {
 
         // Sync RTDB timer
         if (timerEndsAt == null) {
-          // Timer was cleared in Firebase (by another device, or we cleared it)
           _cancelLocalTimer();
         } else {
           final endsAt = (timerEndsAt as num).toInt();
-          // Only start/update if it differs from what we have locally
           if (_timerEndsAt != endsAt) {
             final nowMs = DateTime.now().millisecondsSinceEpoch;
             final remainingMs = endsAt - nowMs;
@@ -268,21 +286,15 @@ class _ControlsScreenState extends State<ControlsScreen> {
   }
 
   // ============================================================
-  // TIMER — RTDB-backed
+  // TIMER — RTDB-backed (Timestamp Logic)
   // ============================================================
 
-  /// Restore a timer from Firebase (used on init or when another device sets one).
   void _restoreTimer(int endsAtMs, int remainingMs) {
     _dryingTimer?.cancel();
     _timerEndsAt = endsAtMs;
 
-    // Derive display label from endsAt
-    final durationMs = endsAtMs -
-        (DateTime.now().millisecondsSinceEpoch - (remainingMs));
-    // Find the closest duration label for button highlight
-    _selectedFanTimer = _msToTimerLabel(endsAtMs);
-
     setState(() {
+      _selectedFanTimer = null; // No specific button highlight on restore
       _remainingSeconds = (remainingMs / 1000).ceil();
       _calculatePower();
     });
@@ -305,16 +317,14 @@ class _ControlsScreenState extends State<ControlsScreen> {
     });
   }
 
-  /// Called when the local countdown tick reaches 0.
   void _handleTimerExpiry() {
     _cancelLocalTimer();
 
-    // Turn fans off and clear timerEndsAt in Firebase
     FirebaseDatabase.instance
         .ref('devices/${widget.deviceId}/fans')
         .update({
       'target': 'off',
-      'timerEndsAt': null,
+      'timerEndsAt': null, 
       'commandRejected': false,
       'lastCommandAt': ServerValue.timestamp,
     }).then((_) {
@@ -332,7 +342,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
     });
   }
 
-  /// Cancel local timer state only (no Firebase write).
   void _cancelLocalTimer() {
     _dryingTimer?.cancel();
     if (mounted) {
@@ -345,7 +354,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
     }
   }
 
-  /// Clear timerEndsAt in Firebase (set to null = no timer).
   Future<void> _clearRtdbTimer() async {
     try {
       await FirebaseDatabase.instance
@@ -356,13 +364,12 @@ class _ControlsScreenState extends State<ControlsScreen> {
     }
   }
 
-  /// Start a new timer: write timerEndsAt to Firebase, start local tick.
   void _startTimerSequence(String duration) {
     int minutes = int.parse(duration.replaceAll('m', ''));
     int totalMs = minutes * 60 * 1000;
+    // Calculate exact Finish Time
     int endsAtMs = DateTime.now().millisecondsSinceEpoch + totalMs;
 
-    // Cancel any existing local timer first
     _dryingTimer?.cancel();
 
     setState(() {
@@ -372,7 +379,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
       _calculatePower();
     });
 
-    // Write to Firebase — this is the source of truth
+    // Write FINISH TIME to Firebase
     FirebaseDatabase.instance
         .ref('devices/${widget.deviceId}/fans')
         .update({
@@ -382,7 +389,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
       debugPrint('startTimerSequence Firebase error: $e');
     });
 
-    // Start local tick for display
     _dryingTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (!mounted) {
         timer.cancel();
@@ -411,7 +417,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
     }
   }
 
-  /// Stop timer and turn fans off: clears local state, writes to Firebase.
   void _stopTimerAndTurnOffFans() {
     _cancelLocalTimer();
 
@@ -419,7 +424,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
         .ref('devices/${widget.deviceId}/fans')
         .update({
       'target': 'off',
-      'timerEndsAt': null,
+      'timerEndsAt': null, 
       'commandRejected': false,
       'lastCommandAt': ServerValue.timestamp,
     }).then((_) {
@@ -460,6 +465,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
       });
       return;
     }
+    // If user taps the active timer, ask to stop it
     if (_selectedFanTimer == duration) {
       _showConfirmation(
         'Stop Timer',
@@ -471,61 +477,75 @@ class _ControlsScreenState extends State<ControlsScreen> {
     _startTimerSequence(duration);
   }
 
-  /// Derive a display label (e.g. "5m") from a future timestamp.
-  /// Matches against known durations; falls back to the closest one.
-  String? _msToTimerLabel(int endsAtMs) {
-    final remainingMs = endsAtMs - DateTime.now().millisecondsSinceEpoch;
-    if (remainingMs <= 0) return null;
+  // ============================================================
+  // FAN TOGGLE — OPTIMISTIC UPDATE
+  // ============================================================
+  void _startFanCooldown() {
+    _fanCooldownTimer?.cancel();
+    setState(() => _fanCooldownRemainingSeconds = 10);
 
-    final remainingMin = remainingMs / 60000;
-    const labels = ['5m', '10m', '15m', '30m'];
-    const mins = [5, 10, 15, 30];
-
-    // Find closest
-    int closestIndex = 0;
-    double closestDiff = double.infinity;
-    for (int i = 0; i < mins.length; i++) {
-      final diff = (remainingMin - mins[i]).abs();
-      if (diff < closestDiff) {
-        closestDiff = diff;
-        closestIndex = i;
+    _fanCooldownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
       }
-    }
-    return labels[closestIndex];
+      setState(() {
+        _fanCooldownRemainingSeconds--;
+        if (_fanCooldownRemainingSeconds <= 0) {
+          _fanCooldownRemainingSeconds = 0;
+          timer.cancel();
+        }
+      });
+    });
   }
 
-  // ============================================================
-  // FAN TOGGLE — with optimistic (instant) local state update
-  // ============================================================
   Future<void> _toggleDryingPower() async {
     if (widget.deviceId.isEmpty) {
       _showNoDeviceDialog();
       return;
     }
 
-    final bool turningOff = _isDryingSystemOn;
+    if (_isFanCoolingDown) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Please wait ${_fanCooldownRemainingSeconds}s before toggling again'),
+          backgroundColor: Colors.orange,
+          duration: const Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
 
-    // --- OPTIMISTIC UPDATE: apply UI change instantly ---
+    // --- INSTANT UPDATE START ---
+    final bool originalState = _isDryingSystemOn;
+    final bool newState = !originalState;
+
     setState(() {
-      _isDryingSystemOn = !_isDryingSystemOn;
-      _isFanCommandProcessing = true;
+      _isDryingSystemOn = newState;
+      _suppressListenerUpdate = true; // Wait for confirmation before listening again
+      
+      // If turning OFF, clear timer visually immediately
+      if (!newState) {
+        _cancelLocalTimer();
+      }
+      
       _calculatePower();
     });
+    // --- INSTANT UPDATE END ---
 
     try {
-      if (turningOff) {
-        // Also clear timer state immediately and in Firebase
-        _cancelLocalTimer();
-
+      if (!newState) {
+        // Turn OFF
         await FirebaseDatabase.instance
             .ref('devices/${widget.deviceId}/fans')
             .update({
           'target': 'off',
-          'timerEndsAt': null,
+          'timerEndsAt': null, 
           'commandRejected': false,
           'lastCommandAt': ServerValue.timestamp,
         });
       } else {
+        // Turn ON
         await FirebaseDatabase.instance
             .ref('devices/${widget.deviceId}/fans')
             .update({
@@ -535,12 +555,15 @@ class _ControlsScreenState extends State<ControlsScreen> {
           'lastCommandAt': ServerValue.timestamp,
         });
       }
+      
+      _startFanCooldown();
+
     } catch (e) {
-      // Revert optimistic update on error
       debugPrint('Fan toggle error: $e');
+      // Revert UI on error
       setState(() {
-        _isDryingSystemOn = turningOff; // revert
-        _isFanCommandProcessing = false;
+        _isDryingSystemOn = originalState;
+        _suppressListenerUpdate = false;
         _calculatePower();
       });
       if (mounted) {
@@ -764,7 +787,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
   Widget build(BuildContext context) {
     final size = MediaQuery.of(context).size;
     final double padding = size.width * 0.05;
-    bool isRunning = _isDryingSystemOn && _selectedFanTimer != null;
+    bool isRunning = _isDryingSystemOn && _dryingTimer != null;
 
     final bool rodButtonLocked =
         _isDryingSystemOn || _isCoolingDown || _isCommandProcessing;
@@ -852,6 +875,44 @@ class _ControlsScreenState extends State<ControlsScreen> {
                 const SizedBox(height: 16),
               ],
 
+              if (_isFanCoolingDown) ...[
+                Container(
+                  width: double.infinity,
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFF6D00).withOpacity(0.08),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(
+                        color: const Color(0xFFFF6D00).withOpacity(0.3)),
+                  ),
+                  child: Row(
+                    children: [
+                      const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Color(0xFFFF6D00),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          'Fan toggle cooldown — wait ${_fanCooldownRemainingSeconds}s',
+                          style: const TextStyle(
+                            color: Color(0xFFFF6D00),
+                            fontWeight: FontWeight.w600,
+                            fontSize: 13,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+              ],
+
               GridView.count(
                 shrinkWrap: true,
                 physics: const NeverScrollableScrollPhysics(),
@@ -900,7 +961,8 @@ class _ControlsScreenState extends State<ControlsScreen> {
                     icon: Icons.wb_sunny_rounded,
                     activeColor: const Color(0xFFFF6D00),
                     isDisabled: _isRodExtended || _isCommandProcessing,
-                    isLoading: _isFanCommandProcessing,
+                    // REMOVED isLoading logic here to show instant update
+                    isLoading: false, 
                     onTap: () {
                       if (widget.deviceId.isEmpty) {
                         _showNoDeviceDialog();
@@ -949,7 +1011,9 @@ class _ControlsScreenState extends State<ControlsScreen> {
                             (val) => _handleTimerSelection(val)),
                         _buildOptionButton('30m', _selectedFanTimer,
                             (val) => _handleTimerSelection(val)),
-                        if (_selectedFanTimer != null)
+                        
+                        // --- STOP/PAUSE BUTTON ---
+                        if (_selectedFanTimer != null || _remainingSeconds > 0)
                           Padding(
                             padding: const EdgeInsets.only(left: 8.0),
                             child: GestureDetector(
@@ -1150,9 +1214,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
     );
   }
 
-  // ============================================================
-  // WIDGETS
-  // ============================================================
   Widget _buildFanModeButton({
     required String label,
     required String rtdbValue,
