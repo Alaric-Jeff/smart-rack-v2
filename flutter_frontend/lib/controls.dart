@@ -32,9 +32,12 @@ class _ControlsScreenState extends State<ControlsScreen> {
   String? _selectedFanTimer;
   bool _isFanCommandProcessing = false;
 
-  // --- TIMER ---
-  Timer? _dryingTimer;
+  // --- RTDB-BACKED TIMER ---
+  // Source of truth: devices/{id}/fans/timerEndsAt (Unix ms, null = no timer)
+  // _remainingSeconds is derived locally from timerEndsAt for display only.
+  Timer? _dryingTimer;         // local tick timer for countdown display
   int _remainingSeconds = 0;
+  int? _timerEndsAt;           // mirrors Firebase timerEndsAt
 
   // --- FIREBASE LISTENERS ---
   StreamSubscription<DatabaseEvent>? _actuatorListener;
@@ -62,6 +65,9 @@ class _ControlsScreenState extends State<ControlsScreen> {
     super.dispose();
   }
 
+  // ============================================================
+  // DIALOGS
+  // ============================================================
   void _showNoDeviceDialog() {
     showDialog(
       context: context,
@@ -82,6 +88,9 @@ class _ControlsScreenState extends State<ControlsScreen> {
     );
   }
 
+  // ============================================================
+  // ACTUATOR INIT + LISTENER
+  // ============================================================
   Future<void> _initializeActuatorState() async {
     if (widget.deviceId.isEmpty) return;
     try {
@@ -162,6 +171,9 @@ class _ControlsScreenState extends State<ControlsScreen> {
     );
   }
 
+  // ============================================================
+  // FAN INIT + LISTENER
+  // ============================================================
   Future<void> _initializeFanState() async {
     if (widget.deviceId.isEmpty) return;
     try {
@@ -174,11 +186,27 @@ class _ControlsScreenState extends State<ControlsScreen> {
         if (data != null) {
           final state = data['state'] as String?;
           final speed = data['speed'] as String?;
+          final timerEndsAt = data['timerEndsAt'];
+
           setState(() {
             _isDryingSystemOn = state == 'on';
             _selectedFanMode = _validateSpeed(speed);
             _calculatePower();
           });
+
+          // Restore RTDB timer if it exists and is still in the future
+          if (timerEndsAt != null) {
+            final endsAt = (timerEndsAt as num).toInt();
+            final nowMs = DateTime.now().millisecondsSinceEpoch;
+            final remainingMs = endsAt - nowMs;
+
+            if (remainingMs > 0) {
+              _restoreTimer(endsAt, remainingMs);
+            } else {
+              // Timer already expired while app was closed — clear it
+              _clearRtdbTimer();
+            }
+          }
         }
       }
     } catch (e) {
@@ -186,15 +214,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
     }
   }
 
-  // ============================================================
-  // FAN LISTENER - FIXED
-  // Removed redundant _stopTimer() call. Timer state is managed
-  // locally by the three functions that initiate fan-off actions:
-  //   1. _toggleDryingPower (manual toggle)
-  //   2. _startTimerSequence timer expiry (auto-off at 0:00)
-  //   3. _stopTimerAndTurnOffFans (red stop button)
-  // The listener only needs to sync _isDryingSystemOn state.
-  // ============================================================
   void _setupFanListener() {
     if (widget.deviceId.isEmpty) return;
 
@@ -210,34 +229,384 @@ class _ControlsScreenState extends State<ControlsScreen> {
 
         final state = data['state'] as String?;
         final speed = data['speed'] as String?;
+        final timerEndsAt = data['timerEndsAt'];
 
+        // Sync fan on/off state
         if (state == 'on' || state == 'off') {
+          final newOn = state == 'on';
           setState(() {
-            _isDryingSystemOn = state == 'on';
-            
+            _isDryingSystemOn = newOn;
             if (speed != null) {
               _selectedFanMode = _validateSpeed(speed);
             }
             _isFanCommandProcessing = false;
             _calculatePower();
-            
-            // REMOVED: redundant _stopTimer() call
-            // Timer cleanup is handled by whoever initiated the off command
           });
+        }
+
+        // Sync RTDB timer
+        if (timerEndsAt == null) {
+          // Timer was cleared in Firebase (by another device, or we cleared it)
+          _cancelLocalTimer();
+        } else {
+          final endsAt = (timerEndsAt as num).toInt();
+          // Only start/update if it differs from what we have locally
+          if (_timerEndsAt != endsAt) {
+            final nowMs = DateTime.now().millisecondsSinceEpoch;
+            final remainingMs = endsAt - nowMs;
+            if (remainingMs > 0) {
+              _restoreTimer(endsAt, remainingMs);
+            } else {
+              _cancelLocalTimer();
+              _clearRtdbTimer();
+            }
+          }
         }
       },
       onError: (error) => debugPrint('Fan listener error: $error'),
     );
   }
 
-  String _validateSpeed(String? speed) {
-    const validSpeeds = ['low', 'mid', 'high'];
-    if (speed != null && validSpeeds.contains(speed)) {
-      return speed;
-    }
-    return 'low';
+  // ============================================================
+  // TIMER — RTDB-backed
+  // ============================================================
+
+  /// Restore a timer from Firebase (used on init or when another device sets one).
+  void _restoreTimer(int endsAtMs, int remainingMs) {
+    _dryingTimer?.cancel();
+    _timerEndsAt = endsAtMs;
+
+    // Derive display label from endsAt
+    final durationMs = endsAtMs -
+        (DateTime.now().millisecondsSinceEpoch - (remainingMs));
+    // Find the closest duration label for button highlight
+    _selectedFanTimer = _msToTimerLabel(endsAtMs);
+
+    setState(() {
+      _remainingSeconds = (remainingMs / 1000).ceil();
+      _calculatePower();
+    });
+
+    _dryingTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
+      final remaining = ((_timerEndsAt! - nowMs) / 1000).ceil();
+
+      if (remaining <= 0) {
+        timer.cancel();
+        _handleTimerExpiry();
+      } else {
+        setState(() => _remainingSeconds = remaining);
+      }
+    });
   }
 
+  /// Called when the local countdown tick reaches 0.
+  void _handleTimerExpiry() {
+    _cancelLocalTimer();
+
+    // Turn fans off and clear timerEndsAt in Firebase
+    FirebaseDatabase.instance
+        .ref('devices/${widget.deviceId}/fans')
+        .update({
+      'target': 'off',
+      'timerEndsAt': null,
+      'commandRejected': false,
+      'lastCommandAt': ServerValue.timestamp,
+    }).then((_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('⏱️ Timer finished — fans turned off'),
+            backgroundColor: Colors.blue,
+            duration: Duration(seconds: 3),
+          ),
+        );
+      }
+    }).catchError((e) {
+      debugPrint('Timer auto-off error: $e');
+    });
+  }
+
+  /// Cancel local timer state only (no Firebase write).
+  void _cancelLocalTimer() {
+    _dryingTimer?.cancel();
+    if (mounted) {
+      setState(() {
+        _selectedFanTimer = null;
+        _remainingSeconds = 0;
+        _timerEndsAt = null;
+        _calculatePower();
+      });
+    }
+  }
+
+  /// Clear timerEndsAt in Firebase (set to null = no timer).
+  Future<void> _clearRtdbTimer() async {
+    try {
+      await FirebaseDatabase.instance
+          .ref('devices/${widget.deviceId}/fans/timerEndsAt')
+          .remove();
+    } catch (e) {
+      debugPrint('clearRtdbTimer error: $e');
+    }
+  }
+
+  /// Start a new timer: write timerEndsAt to Firebase, start local tick.
+  void _startTimerSequence(String duration) {
+    int minutes = int.parse(duration.replaceAll('m', ''));
+    int totalMs = minutes * 60 * 1000;
+    int endsAtMs = DateTime.now().millisecondsSinceEpoch + totalMs;
+
+    // Cancel any existing local timer first
+    _dryingTimer?.cancel();
+
+    setState(() {
+      _selectedFanTimer = duration;
+      _timerEndsAt = endsAtMs;
+      _remainingSeconds = minutes * 60;
+      _calculatePower();
+    });
+
+    // Write to Firebase — this is the source of truth
+    FirebaseDatabase.instance
+        .ref('devices/${widget.deviceId}/fans')
+        .update({
+      'timerEndsAt': endsAtMs,
+      'lastCommandAt': ServerValue.timestamp,
+    }).catchError((e) {
+      debugPrint('startTimerSequence Firebase error: $e');
+    });
+
+    // Start local tick for display
+    _dryingTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
+      final remaining = ((endsAtMs - nowMs) / 1000).ceil();
+
+      if (remaining <= 0) {
+        timer.cancel();
+        _handleTimerExpiry();
+      } else {
+        setState(() => _remainingSeconds = remaining);
+      }
+    });
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('⏱️ Timer set for $minutes minutes'),
+          backgroundColor: Colors.green,
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    }
+  }
+
+  /// Stop timer and turn fans off: clears local state, writes to Firebase.
+  void _stopTimerAndTurnOffFans() {
+    _cancelLocalTimer();
+
+    FirebaseDatabase.instance
+        .ref('devices/${widget.deviceId}/fans')
+        .update({
+      'target': 'off',
+      'timerEndsAt': null,
+      'commandRejected': false,
+      'lastCommandAt': ServerValue.timestamp,
+    }).then((_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('⏹️ Timer stopped — fans turned off'),
+            backgroundColor: Colors.blue,
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+    }).catchError((e) {
+      debugPrint('Stop timer error: $e');
+    });
+  }
+
+  void _handleTimerSelection(String duration) {
+    if (widget.deviceId.isEmpty) {
+      _showNoDeviceDialog();
+      return;
+    }
+
+    if (!_isDryingSystemOn) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Turn ON fans before setting a timer!'),
+          backgroundColor: Colors.orange,
+          duration: Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
+
+    if (_selectedFanTimer != null && _selectedFanTimer != duration) {
+      _showConfirmation('Change Timer', 'change the timer to $duration', () {
+        _startTimerSequence(duration);
+      });
+      return;
+    }
+    if (_selectedFanTimer == duration) {
+      _showConfirmation(
+        'Stop Timer',
+        'stop the timer and turn off the fans',
+        _stopTimerAndTurnOffFans,
+      );
+      return;
+    }
+    _startTimerSequence(duration);
+  }
+
+  /// Derive a display label (e.g. "5m") from a future timestamp.
+  /// Matches against known durations; falls back to the closest one.
+  String? _msToTimerLabel(int endsAtMs) {
+    final remainingMs = endsAtMs - DateTime.now().millisecondsSinceEpoch;
+    if (remainingMs <= 0) return null;
+
+    final remainingMin = remainingMs / 60000;
+    const labels = ['5m', '10m', '15m', '30m'];
+    const mins = [5, 10, 15, 30];
+
+    // Find closest
+    int closestIndex = 0;
+    double closestDiff = double.infinity;
+    for (int i = 0; i < mins.length; i++) {
+      final diff = (remainingMin - mins[i]).abs();
+      if (diff < closestDiff) {
+        closestDiff = diff;
+        closestIndex = i;
+      }
+    }
+    return labels[closestIndex];
+  }
+
+  // ============================================================
+  // FAN TOGGLE — with optimistic (instant) local state update
+  // ============================================================
+  Future<void> _toggleDryingPower() async {
+    if (widget.deviceId.isEmpty) {
+      _showNoDeviceDialog();
+      return;
+    }
+
+    final bool turningOff = _isDryingSystemOn;
+
+    // --- OPTIMISTIC UPDATE: apply UI change instantly ---
+    setState(() {
+      _isDryingSystemOn = !_isDryingSystemOn;
+      _isFanCommandProcessing = true;
+      _calculatePower();
+    });
+
+    try {
+      if (turningOff) {
+        // Also clear timer state immediately and in Firebase
+        _cancelLocalTimer();
+
+        await FirebaseDatabase.instance
+            .ref('devices/${widget.deviceId}/fans')
+            .update({
+          'target': 'off',
+          'timerEndsAt': null,
+          'commandRejected': false,
+          'lastCommandAt': ServerValue.timestamp,
+        });
+      } else {
+        await FirebaseDatabase.instance
+            .ref('devices/${widget.deviceId}/fans')
+            .update({
+          'target': 'on',
+          'speed': _selectedFanMode,
+          'commandRejected': false,
+          'lastCommandAt': ServerValue.timestamp,
+        });
+      }
+    } catch (e) {
+      // Revert optimistic update on error
+      debugPrint('Fan toggle error: $e');
+      setState(() {
+        _isDryingSystemOn = turningOff; // revert
+        _isFanCommandProcessing = false;
+        _calculatePower();
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Fan Error: ${e.toString()}'),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
+    }
+  }
+
+  // ============================================================
+  // FAN SPEED
+  // ============================================================
+  Future<void> _handleFanModeSelection(String rtdbValue) async {
+    if (widget.deviceId.isEmpty) {
+      _showNoDeviceDialog();
+      return;
+    }
+
+    final validatedSpeed = _validateSpeed(rtdbValue);
+    setState(() => _selectedFanMode = validatedSpeed);
+
+    try {
+      final Map<String, dynamic> update = {
+        'speed': validatedSpeed,
+        'commandRejected': false,
+        'lastCommandAt': ServerValue.timestamp,
+      };
+
+      if (_isDryingSystemOn) {
+        update['target'] = 'on';
+      }
+
+      await FirebaseDatabase.instance
+          .ref('devices/${widget.deviceId}/fans')
+          .update(update);
+
+      debugPrint('[FAN SPEED] Sent to Firebase: $validatedSpeed');
+    } catch (e) {
+      debugPrint('Fan mode error: $e');
+      if (mounted) {
+        final snapshot = await FirebaseDatabase.instance
+            .ref('devices/${widget.deviceId}/fans/speed')
+            .get();
+        if (snapshot.exists && mounted) {
+          setState(() {
+            _selectedFanMode = _validateSpeed(snapshot.value as String?);
+          });
+        }
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to set fan speed: ${e.toString()}'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  // ============================================================
+  // ACTUATOR CONTROL
+  // ============================================================
   void _startCooldown() {
     _cooldownTimer?.cancel();
     setState(() => _cooldownRemainingSeconds = 60);
@@ -304,231 +673,15 @@ class _ControlsScreenState extends State<ControlsScreen> {
     }
   }
 
-  Future<void> _toggleDryingPower() async {
-    if (widget.deviceId.isEmpty) {
-      _showNoDeviceDialog();
-      return;
-    }
-
-    setState(() => _isFanCommandProcessing = true);
-
-    try {
-      if (_isDryingSystemOn) {
-        // Turning OFF - clear timer UI state immediately before Firebase write
-        _stopTimer();
-        
-        await FirebaseDatabase.instance
-            .ref('devices/${widget.deviceId}/fans')
-            .update({
-          'target': 'off',
-          'commandRejected': false,
-          'lastCommandAt': ServerValue.timestamp,
-        });
-      } else {
-        await FirebaseDatabase.instance
-            .ref('devices/${widget.deviceId}/fans')
-            .update({
-          'target': 'on',
-          'speed': _selectedFanMode,
-          'commandRejected': false,
-          'lastCommandAt': ServerValue.timestamp,
-        });
-      }
-    } catch (e) {
-      debugPrint('Fan toggle error: $e');
-      setState(() => _isFanCommandProcessing = false);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Fan Error: ${e.toString()}'),
-            backgroundColor: Colors.red,
-            duration: const Duration(seconds: 3),
-          ),
-        );
-      }
-    }
-  }
-
-  Future<void> _handleFanModeSelection(String rtdbValue) async {
-    if (widget.deviceId.isEmpty) {
-      _showNoDeviceDialog();
-      return;
-    }
-
-    final validatedSpeed = _validateSpeed(rtdbValue);
-    setState(() => _selectedFanMode = validatedSpeed);
-
-    try {
-      final Map<String, dynamic> update = {
-        'speed': validatedSpeed,
-        'commandRejected': false,
-        'lastCommandAt': ServerValue.timestamp,
-      };
-
-      if (_isDryingSystemOn) {
-        update['target'] = 'on';
-      }
-
-      await FirebaseDatabase.instance
-          .ref('devices/${widget.deviceId}/fans')
-          .update(update);
-
-      debugPrint('[FAN SPEED] Sent to Firebase: $validatedSpeed');
-    } catch (e) {
-      debugPrint('Fan mode error: $e');
-      if (mounted) {
-        final snapshot = await FirebaseDatabase.instance
-            .ref('devices/${widget.deviceId}/fans/speed')
-            .get();
-        if (snapshot.exists && mounted) {
-          setState(() {
-            _selectedFanMode = _validateSpeed(snapshot.value as String?);
-          });
-        }
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to set fan speed: ${e.toString()}'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
-    }
-  }
-
   // ============================================================
-  // TIMER CONTROL - FIXED
+  // HELPERS
   // ============================================================
-  void _handleTimerSelection(String duration) {
-    if (widget.deviceId.isEmpty) {
-      _showNoDeviceDialog();
-      return;
+  String _validateSpeed(String? speed) {
+    const validSpeeds = ['low', 'mid', 'high'];
+    if (speed != null && validSpeeds.contains(speed)) {
+      return speed;
     }
-
-    if (!_isDryingSystemOn) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Turn ON fans before setting a timer!'),
-          backgroundColor: Colors.orange,
-          duration: Duration(seconds: 2),
-        ),
-      );
-      return;
-    }
-
-    if (_selectedFanTimer != null && _selectedFanTimer != duration) {
-      _showConfirmation('Change Timer', 'change the timer to $duration', () {
-        _startTimerSequence(duration);
-      });
-      return;
-    }
-    if (_selectedFanTimer == duration) {
-      _showConfirmation(
-        'Stop Timer',
-        'stop the timer and turn off the fans',
-        _stopTimerAndTurnOffFans,  // FIX: Now actually turns fans off
-      );
-      return;
-    }
-    _startTimerSequence(duration);
-  }
-
-  void _startTimerSequence(String duration) {
-    int minutes = int.parse(duration.replaceAll('m', ''));
-    int totalSeconds = minutes * 60;
-
-    setState(() {
-      _selectedFanTimer = duration;
-      _remainingSeconds = totalSeconds;
-      _calculatePower();
-    });
-
-    _dryingTimer?.cancel();
-    _dryingTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (!mounted) {
-        timer.cancel();
-        return;
-      }
-      
-      setState(() {
-        _remainingSeconds--;
-      });
-
-      if (_remainingSeconds <= 0) {
-        // Timer reached 0:00 — clear UI state then turn fans off via Firebase
-        timer.cancel();
-        _stopTimer();  // Clear UI state locally
-        
-        FirebaseDatabase.instance
-            .ref('devices/${widget.deviceId}/fans')
-            .update({
-          'target': 'off',
-          'commandRejected': false,
-          'lastCommandAt': ServerValue.timestamp,
-        }).then((_) {
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text('⏱️ Timer finished — fans turned off'),
-                backgroundColor: Colors.blue,
-                duration: Duration(seconds: 3),
-              ),
-            );
-          }
-        }).catchError((e) {
-          debugPrint('Timer auto-off error: $e');
-        });
-      }
-    });
-
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('⏱️ Timer set for $minutes minutes'),
-          backgroundColor: Colors.green,
-          duration: const Duration(seconds: 2),
-        ),
-      );
-    }
-  }
-
-  // FIX: New function for red stop button
-  // Clears timer UI state AND sends Firebase command to turn fans off
-  void _stopTimerAndTurnOffFans() {
-    _stopTimer();  // Clear local timer UI state
-    
-    FirebaseDatabase.instance
-        .ref('devices/${widget.deviceId}/fans')
-        .update({
-      'target': 'off',
-      'commandRejected': false,
-      'lastCommandAt': ServerValue.timestamp,
-    }).then((_) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('⏹️ Timer stopped — fans turned off'),
-            backgroundColor: Colors.blue,
-            duration: Duration(seconds: 2),
-          ),
-        );
-      }
-    }).catchError((e) {
-      debugPrint('Stop timer error: $e');
-    });
-  }
-
-  // Clears only local timer UI state — does NOT touch Firebase
-  // Called by:
-  //   1. _toggleDryingPower (before Firebase write)
-  //   2. _startTimerSequence timer expiry (before Firebase write)
-  //   3. _stopTimerAndTurnOffFans (before Firebase write)
-  void _stopTimer() {
-    _dryingTimer?.cancel();
-    setState(() {
-      _selectedFanTimer = null;
-      _remainingSeconds = 0;
-      _calculatePower();
-    });
+    return 'low';
   }
 
   void _calculatePower() {
@@ -551,7 +704,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
       }
     }
 
-    setState(() => _powerConsumption = newPower);
+    _powerConsumption = newPower;
   }
 
   String _formatTime(int totalSeconds) {
@@ -604,6 +757,9 @@ class _ControlsScreenState extends State<ControlsScreen> {
     );
   }
 
+  // ============================================================
+  // BUILD
+  // ============================================================
   @override
   Widget build(BuildContext context) {
     final size = MediaQuery.of(context).size;
@@ -743,9 +899,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
                     isOn: _isDryingSystemOn,
                     icon: Icons.wb_sunny_rounded,
                     activeColor: const Color(0xFFFF6D00),
-                    isDisabled: _isRodExtended ||
-                        _isCommandProcessing ||
-                        _isFanCommandProcessing,
+                    isDisabled: _isRodExtended || _isCommandProcessing,
                     isLoading: _isFanCommandProcessing,
                     onTap: () {
                       if (widget.deviceId.isEmpty) {
@@ -802,7 +956,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
                               onTap: () => _showConfirmation(
                                 'Stop Timer',
                                 'stop the timer and turn off the fans',
-                                _stopTimerAndTurnOffFans,  // FIX: Now actually stops fans
+                                _stopTimerAndTurnOffFans,
                               ),
                               child: Container(
                                 padding: const EdgeInsets.all(12),
@@ -996,6 +1150,9 @@ class _ControlsScreenState extends State<ControlsScreen> {
     );
   }
 
+  // ============================================================
+  // WIDGETS
+  // ============================================================
   Widget _buildFanModeButton({
     required String label,
     required String rtdbValue,
