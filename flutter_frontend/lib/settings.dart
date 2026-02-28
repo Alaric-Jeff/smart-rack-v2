@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:firebase_database/firebase_database.dart'; 
 
 import 'terms_and_condtions.dart'; 
 import 'edit_profile.dart'; 
@@ -19,11 +20,11 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   // --- STATE VARIABLES ---
   bool _autoRetract = false; 
-  bool _safetyLock = false;
+  bool _childProtection = false; // REPLACED _safetyLock
   bool _notificationsEnabled = true; 
   double _rainSensitivity = 0.0;     
   
-  // --- NEW: 2FA State ---
+  // --- 2FA State ---
   bool _is2FAEnabled = false;
 
   final FirebaseAuth _auth = FirebaseAuth.instance;
@@ -36,6 +37,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String _memberSince = "Loading...";
   String? _userProfileUrl;
   bool _isLoadingUserData = false;
+
+  // Store actual device ID for RTDB calls
+  String? _actualDeviceId; 
 
   @override
   void initState() {
@@ -52,7 +56,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       
       setState(() {
         _autoRetract = prefs.getBool('auto_retract') ?? false;
-        _safetyLock = prefs.getBool('safety_lock') ?? false;
+        _childProtection = prefs.getBool('child_protection') ?? false;
         _notificationsEnabled = prefs.getBool('notifications') ?? true;
         _rainSensitivity = prefs.getDouble('rain_sensitivity') ?? 0.0;
       });
@@ -89,6 +93,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             _userName = "Guest";
             _userEmail = "Not logged in";
             _deviceId = "N/A";
+            _actualDeviceId = null;
             _memberSince = "N/A";
             _isLoadingUserData = false;
           });
@@ -108,8 +113,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
         String? photoUrl = data['photoUrl'];
         Timestamp? createdAt = data['createdAt'];
         
-        // --- NEW: Load 2FA Status ---
         bool is2FA = data['is2FAEnabled'] ?? false;
+
+        // Get actual device ID for RTDB
+        String? currentDevId = data['currentDeviceConnected'] as String?;
+        if (currentDevId == null || currentDevId.isEmpty) {
+          if (data.containsKey('devices') && data['devices'] is List) {
+            List devices = data['devices'] as List;
+            if (devices.isNotEmpty) {
+              currentDevId = devices[0].toString();
+            }
+          }
+        }
 
         String finalDisplayName;
         if (displayName != null && displayName.isNotEmpty) {
@@ -128,16 +143,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
           memberSince = "${_getMonthName(date.month)} ${date.year}";
         }
 
-        String deviceId = "LD-${user.uid.substring(0, 8).toUpperCase()}";
+        String displayDeviceId = "LD-${user.uid.substring(0, 8).toUpperCase()}";
 
         if (mounted) {
           setState(() {
             _userName = finalDisplayName;
             _userEmail = email;
-            _deviceId = deviceId;
+            _deviceId = displayDeviceId;
+            _actualDeviceId = currentDevId; 
             _memberSince = memberSince;
             _userProfileUrl = photoUrl;
-            _is2FAEnabled = is2FA; // Set State
+            _is2FAEnabled = is2FA; 
             _isLoadingUserData = false;
           });
         }
@@ -147,6 +163,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             _userName = user.displayName ?? 'User';
             _userEmail = user.email ?? 'No email';
             _deviceId = "LD-${user.uid.substring(0, 8).toUpperCase()}";
+            _actualDeviceId = null;
             _memberSince = "Recently";
             _userProfileUrl = user.photoURL;
             _isLoadingUserData = false;
@@ -159,6 +176,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _userName = "Error";
           _userEmail = "Retry later";
           _deviceId = "N/A";
+          _actualDeviceId = null;
           _isLoadingUserData = false;
         });
       }
@@ -239,14 +257,200 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  // --- FIXED: UPDATE SETTING (Updates UI Immediately) ---
+  // --- NEW: CHILD PROTECTION TOGGLE WITH PASSWORD VERIFICATION ---
+  Future<void> _handleChildProtectionToggle(bool newValue) async {
+    final user = _auth.currentUser;
+    if (user == null) return;
+
+    // 1. Check if user has an email/password provider
+    bool hasPassword = user.providerData.any((info) => info.providerId == 'password');
+
+    // 2. If NO password (e.g., SSO only), prompt to set one in Edit Profile
+    if (!hasPassword) {
+      showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text("Password Required", style: TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
+          content: const Text("You are signed in via Google (SSO). To use Child Protection, you must set a password in your profile first."),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text("CANCEL", style: TextStyle(color: Colors.grey)),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.pop(context);
+                Navigator.push(context, MaterialPageRoute(builder: (context) => const EditProfileScreen())).then((_) => _fetchUserData());
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF2962FF),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+              child: const Text("EDIT PROFILE", style: TextStyle(color: Colors.white)),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+
+    // 3. If HAS password, prompt to enter it
+    final TextEditingController passwordController = TextEditingController();
+    bool isVerifying = false;
+    String? errorMessage;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: const Text("Security Verification", style: TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text("Please enter your password to turn ${newValue ? 'ON' : 'OFF'} Child Protection."),
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: passwordController,
+                    obscureText: true,
+                    decoration: InputDecoration(
+                      hintText: "Password",
+                      errorText: errorMessage,
+                      prefixIcon: const Icon(Icons.lock_outline),
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                    ),
+                  ),
+                ],
+              ),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+              actions: [
+                TextButton(
+                  onPressed: isVerifying ? null : () => Navigator.pop(dialogContext),
+                  child: const Text("CANCEL", style: TextStyle(color: Colors.grey)),
+                ),
+                ElevatedButton(
+                  onPressed: isVerifying ? null : () async {
+                    if (passwordController.text.isEmpty) {
+                      setDialogState(() => errorMessage = "Password cannot be empty");
+                      return;
+                    }
+
+                    setDialogState(() {
+                      isVerifying = true;
+                      errorMessage = null;
+                    });
+
+                    try {
+                      AuthCredential credential = EmailAuthProvider.credential(
+                        email: user.email!,
+                        password: passwordController.text,
+                      );
+                      
+                      // Re-authenticate
+                      await user.reauthenticateWithCredential(credential);
+                      
+                      // Success! Proceed to update settings
+                      if (mounted) {
+                        Navigator.pop(dialogContext);
+                        _updateSetting('child_protection', newValue);
+                      }
+                    } catch (e) {
+                      setDialogState(() {
+                        isVerifying = false;
+                        errorMessage = "Incorrect password. Please try again.";
+                      });
+                    }
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF2962FF),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                  child: isVerifying 
+                      ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                      : const Text("VERIFY", style: TextStyle(color: Colors.white)),
+                ),
+              ],
+            );
+          }
+        );
+      }
+    );
+  }
+
+  // --- SETTINGS UPDATER ---
   Future<void> _updateSetting(String key, dynamic value) async {
+    // 1. Update UI and SharedPreferences instantly
     setState(() {
       if (key == 'auto_retract') _autoRetract = value;
-      if (key == 'safety_lock') _safetyLock = value;
+      if (key == 'child_protection') _childProtection = value;
       if (key == 'notifications') _notificationsEnabled = value;
       if (key == 'rain_sensitivity') _rainSensitivity = value;
     });
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (key == 'auto_retract') await prefs.setBool('auto_retract', value);
+      if (key == 'child_protection') await prefs.setBool('child_protection', value);
+      if (key == 'notifications') await prefs.setBool('notifications', value);
+      if (key == 'rain_sensitivity') await prefs.setDouble('rain_sensitivity', value);
+    } catch (e) {
+      debugPrint("Error saving setting to SharedPreferences: $e");
+    }
+
+    // 2. If it is Child Protection, also update Realtime Database
+    if (key == 'child_protection') {
+      if (_actualDeviceId != null && _actualDeviceId!.isNotEmpty) {
+        try {
+          await FirebaseDatabase.instance
+              .ref('devices/$_actualDeviceId/settings')
+              .update({'childProtection': value});
+              
+          debugPrint("Child Protection status ($value) sent to RTDB.");
+          
+          if (mounted) {
+             ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(value ? "Child Protection Enabled" : "Child Protection Disabled"),
+                backgroundColor: value ? Colors.blue : Colors.grey,
+                duration: const Duration(seconds: 2),
+                behavior: SnackBarBehavior.floating,
+              ),
+            );
+          }
+        } catch (e) {
+          debugPrint("Error saving Child Protection to RTDB: $e");
+          // Revert UI if RTDB fails
+          setState(() {
+            _childProtection = !value; 
+          });
+          if (mounted) {
+             ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text("Failed to update Child Protection on device."),
+                backgroundColor: Colors.red,
+                duration: Duration(seconds: 2),
+                behavior: SnackBarBehavior.floating,
+              ),
+            );
+          }
+        }
+      } else {
+        debugPrint("Cannot update Child Protection: No device connected.");
+        if (mounted) {
+           ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text("No device connected. Settings saved locally."),
+              backgroundColor: Colors.orange,
+              duration: Duration(seconds: 2),
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        }
+      }
+    }
 
     // --- Notification Pop Up Logic ---
     if (key == 'notifications' && value == true) {
@@ -259,32 +463,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
       );
     }
-
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      if (key == 'auto_retract') await prefs.setBool('auto_retract', value);
-      if (key == 'safety_lock') await prefs.setBool('safety_lock', value);
-      if (key == 'notifications') await prefs.setBool('notifications', value);
-      if (key == 'rain_sensitivity') await prefs.setDouble('rain_sensitivity', value);
-    } catch (e) {
-      debugPrint("Error saving setting: $e");
-    }
   }
 
-  // --- NEW: TOGGLE 2FA LOGIC ---
+  // --- TOGGLE 2FA LOGIC ---
   Future<void> _toggle2FA(bool value) async {
     final user = _auth.currentUser;
     if (user == null) return;
 
     try {
-      // 1. Check if phone is verified first
       final userDoc = await _firestore.collection('users').doc(user.uid).get();
       if (!userDoc.exists) return;
 
       bool isPhoneVerified = userDoc.data()?['isPhoneVerified'] ?? false;
 
       if (value == true && !isPhoneVerified) {
-        // ERROR: Phone not verified
         if (mounted) {
           showDialog(
             context: context,
@@ -297,10 +489,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           );
         }
-        return; // Stop here
+        return; 
       }
 
-      // 2. If Verified, Toggle 2FA
       await _firestore.collection('users').doc(user.uid).update({
         'is2FAEnabled': value
       });
@@ -325,14 +516,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   // --- BLE FUNCTION (Placeholder) ---
   void _onBluetoothTap() {
-    // TODO: Insert your BLE Scan or Connect logic here
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text("Bluetooth functionality ready for integration.")),
     );
-    // Example: Navigator.push(context, MaterialPageRoute(builder: (context) => BleScanScreen()));
   }
 
-  // --- CONFIRMATION MODAL ---
+  // --- CONFIRMATION MODAL (For simple toggles) ---
   void _showConfirmation(String title, bool newValue, VoidCallback onConfirm) {
     showDialog(
       context: context,
@@ -586,13 +775,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20), boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.02), blurRadius: 10, offset: const Offset(0, 4))]),
                 child: Column(
                   children: [
+                    // --- CHILD PROTECTION TOGGLE ---
                     _buildSwitchTile(
-                      title: "Safety Lock", 
-                      subtitle: "Prevent manual controls when heavy load detected", 
+                      title: "Child Protection", 
+                      subtitle: "Require password to access manual controls", 
                       icon: Icons.shield_outlined, 
-                      value: _safetyLock, 
+                      value: _childProtection, 
                       onChanged: (val) {
-                        _showConfirmation("Safety Lock", val, () => _updateSetting('safety_lock', val));
+                        _handleChildProtectionToggle(val);
                       }
                     ),
                   ],
@@ -640,13 +830,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20), boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.02), blurRadius: 10, offset: const Offset(0, 4))]),
                 child: Column(
                   children: [
-                    // --- NEW: 2FA SWITCH WITH CONFIRMATION ---
+                    // --- 2FA SWITCH ---
                     _buildSwitchTile(
                       title: "2-Factor Auth",
                       subtitle: "Secure login with OTP",
                       icon: Icons.security_outlined,
                       value: _is2FAEnabled,
-                      // Wrap in confirmation logic
                       onChanged: (val) {
                         _showConfirmation("2-Factor Auth", val, () => _toggle2FA(val));
                       },
@@ -679,11 +868,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                     Divider(height: 1, color: Colors.grey.shade100, indent: 60, endIndent: 20),
 
-                    // --- NEW: BLUETOOTH BUTTON FOR BLE FILES ---
+                    // --- BLUETOOTH BUTTON ---
                     _buildNavTile(
                       title: "Bluetooth Connection", 
                       icon: Icons.bluetooth, 
-                      onTap: _onBluetoothTap, // Calls the placeholder function
+                      onTap: _onBluetoothTap, 
                     ),
                     Divider(height: 1, color: Colors.grey.shade100, indent: 60, endIndent: 20),
 

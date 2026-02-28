@@ -128,8 +128,8 @@ class _HomeScreenState extends State<HomeScreen> {
           currentIndex: _selectedIndex,
           
           onTap: (index) {
-            // NEW: Check for device before navigating to Controls (1) or Alerts (3)
-            if ((index == 1 || index == 3) && (_currentDeviceId == null || _currentDeviceId!.isEmpty)) {
+            // FIX: Removed "|| index == 3" so Alerts screen is not blocked anymore
+            if (index == 1 && (_currentDeviceId == null || _currentDeviceId!.isEmpty)) {
               _showNoDeviceDialog();
               return; // Stop navigation
             }
