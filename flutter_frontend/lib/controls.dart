@@ -15,6 +15,9 @@ class ControlsScreen extends StatefulWidget {
 }
 
 class _ControlsScreenState extends State<ControlsScreen> {
+  // --- CHILD PROTECTION STATE ---
+  bool _isChildProtectionEnabled = false;
+
   // --- ACTUATOR STATE ---
   bool _isRodExtended = false;
   bool _isCommandProcessing = false;
@@ -32,7 +35,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
   String? _selectedFanTimer;
   bool _isFanCommandProcessing = false;
   
-  // FIX: Prevents listener from reverting optimistic UI update
+  // Prevents listener from reverting optimistic UI update
   bool _suppressListenerUpdate = false;
   
   // --- FAN COOLDOWN (prevents rapid double-taps) ---
@@ -41,13 +44,14 @@ class _ControlsScreenState extends State<ControlsScreen> {
   bool get _isFanCoolingDown => _fanCooldownRemainingSeconds > 0;
 
   // --- RTDB-BACKED TIMER ---
-  Timer? _dryingTimer;         // Local tick timer for countdown display
+  Timer? _dryingTimer;         
   int _remainingSeconds = 0;
-  int? _timerEndsAt;           // Timestamp (ms) from Firebase
+  int? _timerEndsAt;           
 
   // --- FIREBASE LISTENERS ---
   StreamSubscription<DatabaseEvent>? _actuatorListener;
   StreamSubscription<DatabaseEvent>? _fanListener;
+  StreamSubscription<DatabaseEvent>? _settingsListener; // NEW: Listens for Lock
 
   @override
   void initState() {
@@ -57,6 +61,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
       _initializeFanState();
       _setupActuatorListener();
       _setupFanListener();
+      _setupSettingsListener(); // Initialize lock listener
     } else {
       setState(() => _isLoadingState = false);
     }
@@ -69,6 +74,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
     _fanCooldownTimer?.cancel();
     _actuatorListener?.cancel();
     _fanListener?.cancel();
+    _settingsListener?.cancel(); // Dispose listener
     super.dispose();
   }
 
@@ -93,6 +99,24 @@ class _ControlsScreenState extends State<ControlsScreen> {
         ],
       ),
     );
+  }
+
+  // ============================================================
+  // SETTINGS (CHILD PROTECTION) LISTENER
+  // ============================================================
+  void _setupSettingsListener() {
+    if (widget.deviceId.isEmpty) return;
+
+    _settingsListener = FirebaseDatabase.instance
+        .ref('devices/${widget.deviceId}/settings/childProtection')
+        .onValue
+        .listen((DatabaseEvent event) {
+      if (!mounted) return;
+      final value = event.snapshot.value;
+      setState(() {
+        _isChildProtectionEnabled = (value == true);
+      });
+    }, onError: (error) => debugPrint('Settings listener error: $error'));
   }
 
   // ============================================================
@@ -208,10 +232,8 @@ class _ControlsScreenState extends State<ControlsScreen> {
             final remainingMs = endsAt - nowMs;
 
             if (remainingMs > 0) {
-              // Timer is valid: Resume countdown
               _restoreTimer(endsAt, remainingMs);
             } else {
-              // Timer expired while we were away, clear it
               _clearRtdbTimer();
             }
           }
@@ -242,18 +264,14 @@ class _ControlsScreenState extends State<ControlsScreen> {
         if (state == 'on' || state == 'off') {
           final newOn = state == 'on';
 
-          // --- OPTIMISTIC UI LOGIC ---
           if (_suppressListenerUpdate) {
             if (newOn == _isDryingSystemOn) {
-              // Confirmation received! Stop suppressing.
               _suppressListenerUpdate = false;
             } else {
-              // Stale data arrived; ignore it to prevent button flickering
               return; 
             }
           } 
 
-          // Standard Update
           setState(() {
             _isDryingSystemOn = newOn;
             if (speed != null) {
@@ -264,7 +282,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
           });
         }
 
-        // Sync RTDB timer
         if (timerEndsAt == null) {
           _cancelLocalTimer();
         } else {
@@ -288,13 +305,12 @@ class _ControlsScreenState extends State<ControlsScreen> {
   // ============================================================
   // TIMER — RTDB-backed (Timestamp Logic)
   // ============================================================
-
   void _restoreTimer(int endsAtMs, int remainingMs) {
     _dryingTimer?.cancel();
     _timerEndsAt = endsAtMs;
 
     setState(() {
-      _selectedFanTimer = null; // No specific button highlight on restore
+      _selectedFanTimer = null; 
       _remainingSeconds = (remainingMs / 1000).ceil();
       _calculatePower();
     });
@@ -337,8 +353,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
           ),
         );
       }
-    }).catchError((e) {
-      debugPrint('Timer auto-off error: $e');
     });
   }
 
@@ -365,9 +379,10 @@ class _ControlsScreenState extends State<ControlsScreen> {
   }
 
   void _startTimerSequence(String duration) {
+    if (_isChildProtectionEnabled) return; // Guard
+
     int minutes = int.parse(duration.replaceAll('m', ''));
     int totalMs = minutes * 60 * 1000;
-    // Calculate exact Finish Time
     int endsAtMs = DateTime.now().millisecondsSinceEpoch + totalMs;
 
     _dryingTimer?.cancel();
@@ -379,14 +394,11 @@ class _ControlsScreenState extends State<ControlsScreen> {
       _calculatePower();
     });
 
-    // Write FINISH TIME to Firebase
     FirebaseDatabase.instance
         .ref('devices/${widget.deviceId}/fans')
         .update({
       'timerEndsAt': endsAtMs,
       'lastCommandAt': ServerValue.timestamp,
-    }).catchError((e) {
-      debugPrint('startTimerSequence Firebase error: $e');
     });
 
     _dryingTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
@@ -418,6 +430,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
   }
 
   void _stopTimerAndTurnOffFans() {
+    if (_isChildProtectionEnabled) return; // Guard
     _cancelLocalTimer();
 
     FirebaseDatabase.instance
@@ -437,8 +450,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
           ),
         );
       }
-    }).catchError((e) {
-      debugPrint('Stop timer error: $e');
     });
   }
 
@@ -447,6 +458,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
       _showNoDeviceDialog();
       return;
     }
+    if (_isChildProtectionEnabled) return; // Guard
 
     if (!_isDryingSystemOn) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -465,7 +477,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
       });
       return;
     }
-    // If user taps the active timer, ask to stop it
     if (_selectedFanTimer == duration) {
       _showConfirmation(
         'Stop Timer',
@@ -504,6 +515,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
       _showNoDeviceDialog();
       return;
     }
+    if (_isChildProtectionEnabled) return; // Guard
 
     if (_isFanCoolingDown) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -516,26 +528,22 @@ class _ControlsScreenState extends State<ControlsScreen> {
       return;
     }
 
-    // --- INSTANT UPDATE START ---
     final bool originalState = _isDryingSystemOn;
     final bool newState = !originalState;
 
     setState(() {
       _isDryingSystemOn = newState;
-      _suppressListenerUpdate = true; // Wait for confirmation before listening again
+      _suppressListenerUpdate = true; 
       
-      // If turning OFF, clear timer visually immediately
       if (!newState) {
         _cancelLocalTimer();
       }
       
       _calculatePower();
     });
-    // --- INSTANT UPDATE END ---
 
     try {
       if (!newState) {
-        // Turn OFF
         await FirebaseDatabase.instance
             .ref('devices/${widget.deviceId}/fans')
             .update({
@@ -545,7 +553,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
           'lastCommandAt': ServerValue.timestamp,
         });
       } else {
-        // Turn ON
         await FirebaseDatabase.instance
             .ref('devices/${widget.deviceId}/fans')
             .update({
@@ -560,7 +567,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
 
     } catch (e) {
       debugPrint('Fan toggle error: $e');
-      // Revert UI on error
       setState(() {
         _isDryingSystemOn = originalState;
         _suppressListenerUpdate = false;
@@ -586,6 +592,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
       _showNoDeviceDialog();
       return;
     }
+    if (_isChildProtectionEnabled) return; // Guard
 
     final validatedSpeed = _validateSpeed(rtdbValue);
     setState(() => _selectedFanMode = validatedSpeed);
@@ -605,7 +612,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
           .ref('devices/${widget.deviceId}/fans')
           .update(update);
 
-      debugPrint('[FAN SPEED] Sent to Firebase: $validatedSpeed');
     } catch (e) {
       debugPrint('Fan mode error: $e');
       if (mounted) {
@@ -617,12 +623,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
             _selectedFanMode = _validateSpeed(snapshot.value as String?);
           });
         }
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to set fan speed: ${e.toString()}'),
-            backgroundColor: Colors.red,
-          ),
-        );
       }
     }
   }
@@ -655,7 +655,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
       _showNoDeviceDialog();
       return;
     }
-    if (_isCoolingDown || _isCommandProcessing) return;
+    if (_isCoolingDown || _isCommandProcessing || _isChildProtectionEnabled) return; // Guard
 
     setState(() => _isCommandProcessing = true);
 
@@ -789,8 +789,11 @@ class _ControlsScreenState extends State<ControlsScreen> {
     final double padding = size.width * 0.05;
     bool isRunning = _isDryingSystemOn && _dryingTimer != null;
 
+    // ADDED: Include Child Protection in the lock logic
     final bool rodButtonLocked =
-        _isDryingSystemOn || _isCoolingDown || _isCommandProcessing;
+        _isDryingSystemOn || _isCoolingDown || _isCommandProcessing || _isChildProtectionEnabled;
+    final bool fanButtonLocked = 
+        _isRodExtended || _isCommandProcessing || _isChildProtectionEnabled;
 
     if (_isLoadingState) {
       return const Scaffold(
@@ -833,6 +836,35 @@ class _ControlsScreenState extends State<ControlsScreen> {
                           fontWeight: FontWeight.w500)),
                 ],
               ),
+              
+              // --- CHILD PROTECTION BANNER ---
+              if (_isChildProtectionEnabled)
+                Container(
+                  margin: const EdgeInsets.only(top: 24),
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  decoration: BoxDecoration(
+                    color: Colors.red.withOpacity(0.08),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: Colors.red.withOpacity(0.3)),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.lock, color: Colors.red, size: 22),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          'Child Protection is ON. Manual controls are locked. You can disable this in Settings.',
+                          style: TextStyle(
+                            color: Colors.red[800],
+                            fontWeight: FontWeight.w600,
+                            fontSize: 13,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+
               const SizedBox(height: 28),
 
               if (_isCoolingDown) ...[
@@ -875,7 +907,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
                 const SizedBox(height: 16),
               ],
 
-              if (_isFanCoolingDown) ...[
+              if (_isFanCoolingDown && !_isChildProtectionEnabled) ...[
                 Container(
                   width: double.infinity,
                   padding:
@@ -936,6 +968,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
                         _showNoDeviceDialog();
                         return;
                       }
+                      if (_isChildProtectionEnabled) return;
                       if (_isDryingSystemOn) {
                         ScaffoldMessenger.of(context).showSnackBar(
                           const SnackBar(
@@ -960,14 +993,14 @@ class _ControlsScreenState extends State<ControlsScreen> {
                     isOn: _isDryingSystemOn,
                     icon: Icons.wb_sunny_rounded,
                     activeColor: const Color(0xFFFF6D00),
-                    isDisabled: _isRodExtended || _isCommandProcessing,
-                    // REMOVED isLoading logic here to show instant update
+                    isDisabled: fanButtonLocked,
                     isLoading: false, 
                     onTap: () {
                       if (widget.deviceId.isEmpty) {
                         _showNoDeviceDialog();
                         return;
                       }
+                      if (_isChildProtectionEnabled) return;
                       if (_isRodExtended) {
                         ScaffoldMessenger.of(context).showSnackBar(
                           const SnackBar(
@@ -990,9 +1023,11 @@ class _ControlsScreenState extends State<ControlsScreen> {
               const SizedBox(height: 32),
 
               Opacity(
-                opacity: _isDryingSystemOn ? 1.0 : 0.5,
+                // ADDED: Make it look disabled if child protection is ON
+                opacity: (_isDryingSystemOn && !_isChildProtectionEnabled) ? 1.0 : 0.5,
                 child: AbsorbPointer(
-                  absorbing: !_isDryingSystemOn,
+                  // ADDED: Prevent taps if child protection is ON
+                  absorbing: !_isDryingSystemOn || _isChildProtectionEnabled,
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
@@ -1012,7 +1047,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
                         _buildOptionButton('30m', _selectedFanTimer,
                             (val) => _handleTimerSelection(val)),
                         
-                        // --- STOP/PAUSE BUTTON ---
                         if (_selectedFanTimer != null || _remainingSeconds > 0)
                           Padding(
                             padding: const EdgeInsets.only(left: 8.0),
@@ -1227,6 +1261,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
             _showNoDeviceDialog();
             return;
           }
+          if (_isChildProtectionEnabled) return;
           if (!isSelected) {
             _handleFanModeSelection(rtdbValue);
           }
