@@ -23,7 +23,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   bool _isLoading = true;
   bool _isSaving = false;
   bool _isSendingOtp = false;
-  bool _isUploadingImage = false; // NEW: Track image upload state
+  bool _isUploadingImage = false; 
 
   bool _isPhoneVerified = false;
 
@@ -32,9 +32,10 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   late TextEditingController _lastNameController;
   late TextEditingController _contactNumberController;
   late TextEditingController _addressController;
+  late TextEditingController _regionController; 
 
   String? _photoUrl;
-  String? _photoPublicId; // NEW: Store Cloudinary public_id
+  String? _photoPublicId; 
   File? _selectedImage;
   bool _hasPassword = false;
   String? _signInProvider;
@@ -60,6 +61,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     _lastNameController = TextEditingController();
     _contactNumberController = TextEditingController();
     _addressController = TextEditingController();
+    _regionController = TextEditingController(); 
 
     _displayNameController.addListener(() {
       if (mounted) setState(() {});
@@ -89,10 +91,10 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     _lastNameController.dispose();
     _contactNumberController.dispose();
     _addressController.dispose();
+    _regionController.dispose(); 
     super.dispose();
   }
 
-  // --- UPDATED: Pick and Upload Image Immediately ---
   Future<void> _pickImage() async {
     try {
       final ImagePicker picker = ImagePicker();
@@ -105,13 +107,11 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
 
       if (image == null) return;
 
-      // Show the image locally first
       setState(() {
         _selectedImage = File(image.path);
         _isUploadingImage = true;
       });
 
-      // Convert to base64
       final bytes = await File(image.path).readAsBytes();
       final base64Image = 'data:image/jpeg;base64,${base64Encode(bytes)}';
 
@@ -122,14 +122,12 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
         return;
       }
 
-      // Upload to Cloudinary
       await setImage(
         userId: user.uid,
         fileBase64: base64Image,
-        oldPublicId: _photoPublicId, // Delete old image if exists
+        oldPublicId: _photoPublicId, 
       );
 
-      // Fetch updated user data to get new URL and public_id
       final userDoc = await _firestore.collection('users').doc(user.uid).get();
       final data = userDoc.data();
 
@@ -137,7 +135,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
         setState(() {
           _photoUrl = data?['image_url'];
           _photoPublicId = data?['image_public_id'];
-          _selectedImage = null; // Clear local file
+          _selectedImage = null; 
           _isUploadingImage = false;
         });
         _showSnackBar('Image uploaded successfully!', Colors.green);
@@ -151,14 +149,12 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     }
   }
 
-  // --- NEW: Delete Profile Image ---
   Future<void> _deleteImage() async {
     if (_photoPublicId == null) {
       _showSnackBar("No image to delete", Colors.orange);
       return;
     }
 
-    // Confirm deletion
     final shouldDelete = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -212,7 +208,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   Future<List<String>> _fetchAddressSuggestions(String query) async {
     if (query.isEmpty) return [];
 
-    final url = Uri.parse('https://photon.komoot.io/api/?q=$query&limit=5');
+    final url = Uri.parse('https://photon.komoot.io/api/?q=${Uri.encodeComponent(query)}&limit=5');
 
     try {
       final response = await http.get(url);
@@ -225,16 +221,50 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
           String street = props['street'] ?? '';
           String city = props['city'] ?? props['state'] ?? '';
           String country = props['country'] ?? '';
+          
           return [
             name,
             street,
             city,
             country,
           ].where((part) => part.isNotEmpty).join(', ');
-        }).toList();
+        }).toSet().toList();
       }
     } catch (e) {
       debugPrint("Address API Error: $e");
+    }
+    return [];
+  }
+
+  Future<List<String>> _fetchRegionSuggestions(String query) async {
+    if (query.isEmpty) return [];
+
+    final url = Uri.parse('https://geocoding-api.open-meteo.com/v1/search?name=${Uri.encodeComponent(query)}&count=5');
+
+    try {
+      final response = await http.get(url);
+
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        
+        if (!data.containsKey('results') || data['results'] == null) {
+          return [];
+        }
+
+        return (data['results'] as List).map((item) {
+          String name = item['name'] ?? '';
+          String admin1 = item['admin1'] ?? ''; 
+          String country = item['country'] ?? '';
+          
+          return [
+            name,
+            admin1,
+            country,
+          ].where((part) => part.isNotEmpty).join(', ');
+        }).toSet().toList(); 
+      }
+    } catch (e) {
+      debugPrint("Region API Error: $e");
     }
     return [];
   }
@@ -452,8 +482,8 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
           }
 
           _addressController.text = data['address'] ?? '';
+          _regionController.text = data['region'] ?? ''; 
           
-          // NEW: Load Cloudinary image data
           _photoUrl = data['image_url'];
           _photoPublicId = data['image_public_id'];
           
@@ -520,12 +550,12 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
 
       final Map<String, dynamic> updates = {};
 
-      // Image is already uploaded via _pickImage, so no need to upload here
       updates['displayName'] = _displayNameController.text.trim();
       updates['firstName'] = _firstNameController.text.trim();
       updates['lastName'] = _lastNameController.text.trim();
       updates['contactNumber'] = "+63${_contactNumberController.text.trim()}";
       updates['address'] = _addressController.text.trim();
+      updates['region'] = _regionController.text.trim(); 
       updates['updatedAt'] = FieldValue.serverTimestamp();
       updates['isPhoneVerified'] = _isPhoneVerified;
 
@@ -785,7 +815,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                 ),
                 const SizedBox(height: 30),
 
-                // --- UPDATED PROFILE PICTURE SECTION ---
                 Center(
                   child: Stack(
                     children: [
@@ -837,7 +866,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                         ),
                       ),
                       
-                      // Camera Icon (Upload)
                       Positioned(
                         bottom: 0,
                         right: 0,
@@ -861,7 +889,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                         ),
                       ),
                       
-                      // Delete Icon (Only show if image exists)
                       if (_photoUrl != null && _photoUrl!.isNotEmpty)
                         Positioned(
                           top: 0,
@@ -1088,8 +1115,8 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                                             strokeWidth: 2,
                                             valueColor:
                                                 AlwaysStoppedAnimation<Color>(
-                                                  Color(0xFF2962FF),
-                                                ),
+                                              Color(0xFF2962FF),
+                                            ),
                                           ),
                                         )
                                       : const Text(
@@ -1180,11 +1207,132 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                               decoration: InputDecoration(
                                 filled: true,
                                 fillColor: Colors.white,
-                                hintText: "Search address...",
-                                suffixIcon: const Icon(
-                                  Icons.location_on_outlined,
-                                  color: Colors.grey,
+                                hintText: "Search specific street...",
+                                contentPadding: const EdgeInsets.symmetric(
+                                  horizontal: 16,
+                                  vertical: 16,
                                 ),
+                                enabledBorder: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                  borderSide: const BorderSide(
+                                    color: Colors.black87,
+                                    width: 1.5,
+                                  ),
+                                ),
+                                focusedBorder: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                  borderSide: const BorderSide(
+                                    color: Color(0xFF2962FF),
+                                    width: 2,
+                                  ),
+                                ),
+                                errorBorder: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                  borderSide: const BorderSide(
+                                    color: Colors.red,
+                                    width: 1.5,
+                                  ),
+                                ),
+                                focusedErrorBorder: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                  borderSide: const BorderSide(
+                                    color: Colors.red,
+                                    width: 2,
+                                  ),
+                                ),
+                              ),
+                            );
+                          },
+                      optionsViewBuilder: (context, onSelected, options) {
+                        return Align(
+                          alignment: Alignment.topLeft,
+                          child: Material(
+                            elevation: 4.0,
+                            borderRadius: BorderRadius.circular(12),
+                            child: Container(
+                              width: MediaQuery.of(context).size.width - 48,
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              constraints: const BoxConstraints(maxHeight: 250),
+                              child: ListView.separated(
+                                padding: EdgeInsets.zero,
+                                shrinkWrap: true,
+                                itemCount: options.length,
+                                separatorBuilder: (ctx, i) =>
+                                    const Divider(height: 1),
+                                itemBuilder: (BuildContext context, int index) {
+                                  final String option = options.elementAt(
+                                    index,
+                                  );
+                                  return ListTile(
+                                    title: Text(
+                                      option,
+                                      style: const TextStyle(fontSize: 14),
+                                    ),
+                                    onTap: () => onSelected(option),
+                                  );
+                                },
+                              ),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ],
+                ),
+
+                const SizedBox(height: 16),
+
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      "CITY / REGION",
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF5A6175),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Autocomplete<String>(
+                      optionsBuilder:
+                          (TextEditingValue textEditingValue) async {
+                            if (textEditingValue.text.isEmpty) {
+                              return const Iterable<String>.empty();
+                            }
+                            return await _fetchRegionSuggestions(
+                              textEditingValue.text,
+                            );
+                          },
+                      onSelected: (String selection) {
+                        _regionController.text = selection;
+                      },
+                      fieldViewBuilder:
+                          (context, controller, focusNode, onEditingComplete) {
+                            if (controller.text != _regionController.text) {
+                              controller.text = _regionController.text;
+                            }
+                            controller.addListener(() {
+                              _regionController.text = controller.text;
+                            });
+
+                            return TextFormField(
+                              controller: controller,
+                              focusNode: focusNode,
+                              onEditingComplete: onEditingComplete,
+                              validator: (val) {
+                                if (val == null || val.trim().isEmpty) {
+                                  return "Required for weather updates";
+                                }
+                                return null;
+                              },
+                              decoration: InputDecoration(
+                                filled: true,
+                                fillColor: Colors.white,
+                                hintText: "Search city or region...",
                                 contentPadding: const EdgeInsets.symmetric(
                                   horizontal: 16,
                                   vertical: 16,

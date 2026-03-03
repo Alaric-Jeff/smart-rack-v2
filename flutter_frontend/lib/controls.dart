@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'dart:async';
 import 'package:firebase_database/firebase_database.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
 class ControlsScreen extends StatefulWidget {
   final String deviceId;
@@ -51,20 +52,111 @@ class _ControlsScreenState extends State<ControlsScreen> {
   // --- FIREBASE LISTENERS ---
   StreamSubscription<DatabaseEvent>? _actuatorListener;
   StreamSubscription<DatabaseEvent>? _fanListener;
-  StreamSubscription<DatabaseEvent>? _settingsListener; // NEW: Listens for Lock
+  StreamSubscription<DatabaseEvent>? _settingsListener;
+
+  // --- BLE STATE ---
+  // When a BLE device is connected, commands go via BLE instead of Firebase.
+  // Firebase listeners remain active so cloud state stays in sync.
+  BluetoothDevice? _bleDevice;
+  BluetoothCharacteristic? _bleCommandChar;
+  bool _isBleConnected = false;
+  StreamSubscription<BluetoothConnectionState>? _bleConnectionStateSub;
+
+  // --- LAST-WRITE-WINS TIMESTAMPS ---
+  // Every command includes a clientTimestamp so the ESP32 can discard
+  // stale commands when two users tap simultaneously (TOCTOU fix).
+  int _lastActuatorCommandTs = 0;
+  int _lastFanCommandTs = 0;
+
+  // --- CONNECTIVITY / RTDB RECONNECT ---
+  // Monitors internet availability. When internet returns after being offline,
+  // re-syncs state from Firebase so BLE-only state gets reconciled with cloud.
+  StreamSubscription<BluetoothCharacteristic>? _bleStatusNotifySub;
+  Timer? _connectivityTimer;
+  bool _wasOffline = false;   // true when Firebase failed at init
 
   @override
   void initState() {
     super.initState();
     if (widget.deviceId.isNotEmpty) {
-      _initializeActuatorState();
-      _initializeFanState();
+      _initializeState();         // Coordinates Firebase + BLE fallback
       _setupActuatorListener();
       _setupFanListener();
-      _setupSettingsListener(); // Initialize lock listener
+      _setupSettingsListener();
+      _listenForBleConnection();
     } else {
       setState(() => _isLoadingState = false);
     }
+  }
+
+  // ============================================================
+  // COORDINATED STATE INITIALIZATION
+  // Tries Firebase first (3s timeout). If it fails or times out
+  // (no internet), falls back to requesting state from the ESP32
+  // via BLE. App works fully offline as long as BLE is connected.
+  // ============================================================
+  Future<void> _initializeState() async {
+    bool firebaseLoaded = false;
+
+    try {
+      await Future.wait([
+        _initializeActuatorState().then((_) => firebaseLoaded = true),
+        _initializeFanState(),
+      ]).timeout(const Duration(seconds: 3));
+    } catch (e) {
+      debugPrint('[INIT] Firebase fetch timed out or failed: $e');
+    }
+
+    if (!firebaseLoaded && mounted) {
+      debugPrint('[INIT] No internet — falling back to BLE state');
+      _wasOffline = true;
+      await _initializeFromBle();
+      // Start polling for internet — when it returns, re-sync from Firebase
+      _startConnectivityMonitor();
+    }
+
+    // Loading spinner stops here regardless of which path succeeded
+    if (mounted) setState(() => _isLoadingState = false);
+  }
+
+  // ============================================================
+  // CONNECTIVITY MONITOR
+  // Polls Firebase every 5s when we started offline. As soon as
+  // Firebase becomes reachable, fetches current state, stops polling,
+  // and lets the existing stream listeners take over from there.
+  // ============================================================
+  void _startConnectivityMonitor() {
+    _connectivityTimer?.cancel();
+    _connectivityTimer = Timer.periodic(const Duration(seconds: 5), (_) async {
+      if (!mounted) return;
+      try {
+        // Lightweight probe — just read actuator state
+        final snap = await FirebaseDatabase.instance
+            .ref('devices/${widget.deviceId}/actuator/state')
+            .get()
+            .timeout(const Duration(seconds: 3));
+
+        if (snap.exists) {
+          debugPrint('[CONNECTIVITY] Internet restored — re-syncing from Firebase');
+          _connectivityTimer?.cancel();
+          _wasOffline = false;
+          // Re-fetch full state from Firebase now that we have internet
+          await _initializeActuatorState();
+          await _initializeFanState();
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Connected — state synced with cloud'),
+                backgroundColor: Colors.green,
+                duration: Duration(seconds: 3),
+              ),
+            );
+          }
+        }
+      } catch (_) {
+        // Still offline — keep polling silently
+      }
+    });
   }
 
   @override
@@ -74,13 +166,262 @@ class _ControlsScreenState extends State<ControlsScreen> {
     _fanCooldownTimer?.cancel();
     _actuatorListener?.cancel();
     _fanListener?.cancel();
-    _settingsListener?.cancel(); // Dispose listener
+    _settingsListener?.cancel();
+    _bleConnectionStateSub?.cancel();
+    _connectivityTimer?.cancel();
     super.dispose();
   }
 
   // ============================================================
-  // DIALOGS
+  // BLE CONNECTION LISTENER
+  // Watches for an already-connected BLE device (from bluetooth_pairing.dart).
+  // When connected, commands route via BLE. When disconnected, falls back to Firebase.
   // ============================================================
+  void _listenForBleConnection() {
+    // 1. Check if a device is already connected (paired from bluetooth_pairing.dart)
+    final connectedDevices = FlutterBluePlus.connectedDevices;
+    if (connectedDevices.isNotEmpty) {
+      _attachBleDevice(connectedDevices.first);
+    }
+
+    // 2. Watch for NEW devices connecting after this screen opens.
+    //    flutter_blue_plus fires connectionState on each BluetoothDevice object,
+    //    so we poll connectedDevices periodically to catch new connections.
+    //    (FlutterBluePlus has no global "new device connected" event stream.)
+    Timer.periodic(const Duration(seconds: 3), (timer) {
+      if (!mounted) { timer.cancel(); return; }
+      if (_isBleConnected) return; // already attached
+      final devices = FlutterBluePlus.connectedDevices;
+      if (devices.isNotEmpty) {
+        timer.cancel();
+        _attachBleDevice(devices.first);
+      }
+    });
+
+    // 3. If Bluetooth adapter turns off, clear BLE state
+    FlutterBluePlus.adapterState.listen((state) {
+      if (state == BluetoothAdapterState.off && mounted) {
+        setState(() {
+          _isBleConnected = false;
+          _bleDevice = null;
+          _bleCommandChar = null;
+        });
+        debugPrint('[BLE] Adapter off — BLE state cleared');
+      }
+    });
+  }
+
+  Future<void> _attachBleDevice(BluetoothDevice device) async {
+    _bleDevice = device;
+
+    // Discover all services in one call — avoids double-discover inconsistency
+    List<BluetoothService> services = [];
+    try {
+      services = await device.discoverServices();
+    } catch (e) {
+      debugPrint('[BLE] discoverServices error: $e');
+    }
+
+    for (final service in services) {
+      if (service.uuid.toString().toLowerCase() != '12345678-1234-1234-1234-123456789abc') continue;
+
+      for (final char in service.characteristics) {
+        final uuid = char.uuid.toString().toLowerCase();
+
+        // Command characteristic (write) — for sending commands
+        if (uuid == '12345678-1234-1234-1234-123456789abe') {
+          _bleCommandChar = char;
+          debugPrint('[BLE] Command characteristic found');
+        }
+
+        // Status characteristic (notify) — for receiving live state updates
+        // ESP32 sends JSON on every state change and on "status" request
+        if (uuid == '12345678-1234-1234-1234-123456789abd') {
+          try {
+            await char.setNotifyValue(true);
+            char.lastValueStream.listen((value) {
+              if (!mounted || value.isEmpty) return;
+              final json = String.fromCharCodes(value);
+              if (json.startsWith('{')) _applyBleStatus(json);
+            });
+            debugPrint('[BLE] Subscribed to status notifications');
+          } catch (e) {
+            debugPrint('[BLE] Notify subscribe error: $e');
+          }
+        }
+      }
+    }
+
+    // Listen for disconnect — when disconnected, fall back to Firebase
+    _bleConnectionStateSub?.cancel();
+    _bleConnectionStateSub = device.connectionState.listen((state) {
+      if (!mounted) return;
+      final connected = state == BluetoothConnectionState.connected;
+      setState(() => _isBleConnected = connected);
+      if (!connected) {
+        setState(() {
+          _bleDevice = null;
+          _bleCommandChar = null;
+        });
+        debugPrint('[BLE] Disconnected — commands will fall back to Firebase');
+        // If we started offline, restart connectivity monitor in case internet is back
+        if (_wasOffline) _startConnectivityMonitor();
+      }
+    });
+
+    if (mounted) setState(() => _isBleConnected = true);
+    debugPrint('[BLE] Attached to device: ${device.platformName}');
+  }
+
+  // ============================================================
+  // BLE COMMAND SENDER
+  // Writes a plain string command to the ESP32 command characteristic.
+  // Returns true if sent successfully via BLE.
+  // Falls back to Firebase if BLE is not available.
+  // ============================================================
+  Future<bool> _sendBleCommand(String command) async {
+    if (!_isBleConnected || _bleCommandChar == null) return false;
+    try {
+      await _bleCommandChar!.write(command.codeUnits, withoutResponse: true);
+      debugPrint('[BLE CMD] Sent: $command');
+      return true;
+    } catch (e) {
+      debugPrint('[BLE CMD] Failed: $e');
+      setState(() {
+        _isBleConnected = false;
+        _bleDevice = null;
+        _bleCommandChar = null;
+      });
+      return false;
+    }
+  }
+
+  // ============================================================
+  // BLE STATE INITIALIZATION FALLBACK
+  // Called when Firebase is unreachable. Sends "status" command to
+  // ESP32 and reads the response from the notify characteristic.
+  // ESP32 responds with JSON: {"actuator":"retracted","fan":"off",
+  //   "fanSpeed":"low","rain":1234,"temp":28.5,"humidity":65.0,"rainState":"none"}
+  // ============================================================
+  Future<void> _initializeFromBle() async {
+    // Wait for _attachBleDevice to finish if BLE was just detected
+    // (it runs concurrently via _listenForBleConnection)
+    int retries = 10;
+    while (!_isBleConnected && retries-- > 0) {
+      await Future.delayed(const Duration(milliseconds: 300));
+    }
+
+    if (!_isBleConnected || _bleCommandChar == null) {
+      debugPrint('[BLE INIT] No BLE connection available for state fallback');
+      return;
+    }
+
+    try {
+      // Find the status (notify) characteristic to read current state
+      BluetoothCharacteristic? statusChar;
+      final services = _bleDevice!.servicesList;
+      for (final service in services) {
+        if (service.uuid.toString().toLowerCase() == '12345678-1234-1234-1234-123456789abc') {
+          for (final char in service.characteristics) {
+            if (char.uuid.toString().toLowerCase() == '12345678-1234-1234-1234-123456789abd') {
+              statusChar = char;
+              break;
+            }
+          }
+        }
+      }
+
+      if (statusChar == null) {
+        debugPrint('[BLE INIT] Status characteristic not found');
+        return;
+      }
+
+      // Subscribe to notifications then request status
+      await statusChar.setNotifyValue(true);
+
+      // Listen for one status response
+      final completer = Completer<String>();
+      late StreamSubscription sub;
+      sub = statusChar.lastValueStream.listen((value) {
+        if (value.isNotEmpty) {
+          final json = String.fromCharCodes(value);
+          if (json.startsWith('{')) {
+            completer.complete(json);
+            sub.cancel();
+          }
+        }
+      });
+
+      // Request status from ESP32
+      await _sendBleCommand('status');
+
+      // Wait up to 3 seconds for response
+      final json = await completer.future.timeout(
+        const Duration(seconds: 3),
+        onTimeout: () {
+          sub.cancel();
+          return '';
+        },
+      );
+
+      if (json.isNotEmpty && mounted) {
+        _applyBleStatus(json);
+        debugPrint('[BLE INIT] State loaded from ESP32: $json');
+      }
+    } catch (e) {
+      debugPrint('[BLE INIT] Error fetching BLE state: $e');
+    }
+  }
+
+  // Parses the ESP32 JSON status string and applies it to Flutter state.
+  // Format: {"actuator":"retracted","fan":"off","fanSpeed":"low",
+  //          "rain":1234,"temp":28.5,"humidity":65.0,"rainState":"none"}
+  void _applyBleStatus(String json) {
+    try {
+      // Simple manual parse — avoids dart:convert dependency issues
+      String? _extract(String key) {
+        final pattern = '"$key":"';
+        final start = json.indexOf(pattern);
+        if (start == -1) return null;
+        final valueStart = start + pattern.length;
+        final end = json.indexOf('"', valueStart);
+        return end == -1 ? null : json.substring(valueStart, end);
+      }
+
+      final actuator = _extract('actuator');
+      final fan      = _extract('fan');
+      final fanSpeed = _extract('fanSpeed');
+
+      if (!mounted) return;
+      setState(() {
+        if (actuator != null) _isRodExtended = actuator == 'extended';
+        if (fan      != null) _isDryingSystemOn = fan == 'on';
+        if (fanSpeed != null) _selectedFanMode = _validateSpeed(fanSpeed);
+        _calculatePower();
+      });
+    } catch (e) {
+      debugPrint('[BLE INIT] Failed to parse BLE status: $e');
+    }
+  }
+
+  // ============================================================
+  // REJECTION SNACKBAR
+  // ============================================================
+  void _showRejectionSnackBar(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Row(children: [
+        const Icon(Icons.warning_amber_rounded, color: Colors.white, size: 18),
+        const SizedBox(width: 10),
+        Expanded(child: Text(message)),
+      ]),
+      backgroundColor: Colors.red.shade700,
+      duration: const Duration(seconds: 3),
+      behavior: SnackBarBehavior.floating,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+    ));
+  }
+
   void _showNoDeviceDialog() {
     showDialog(
       context: context,
@@ -101,9 +442,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
     );
   }
 
-  // ============================================================
-  // SETTINGS (CHILD PROTECTION) LISTENER
-  // ============================================================
   void _setupSettingsListener() {
     if (widget.deviceId.isEmpty) return;
 
@@ -119,30 +457,19 @@ class _ControlsScreenState extends State<ControlsScreen> {
     }, onError: (error) => debugPrint('Settings listener error: $error'));
   }
 
-  // ============================================================
-  // ACTUATOR INIT + LISTENER
-  // ============================================================
   Future<void> _initializeActuatorState() async {
     if (widget.deviceId.isEmpty) return;
-    try {
-      final snapshot = await FirebaseDatabase.instance
-          .ref('devices/${widget.deviceId}/actuator/state')
-          .get();
-
-      if (snapshot.exists && mounted) {
-        final state = snapshot.value as String?;
-        setState(() {
-          _isRodExtended = state == 'extended';
-          _isLoadingState = false;
-          _calculatePower();
-        });
-      } else {
-        if (mounted) setState(() => _isLoadingState = false);
-      }
-    } catch (e) {
-      debugPrint('Initial actuator state load: $e');
-      if (mounted) setState(() => _isLoadingState = false);
+    final snapshot = await FirebaseDatabase.instance
+        .ref('devices/${widget.deviceId}/actuator/state')
+        .get();
+    if (snapshot.exists && mounted) {
+      final state = snapshot.value as String?;
+      setState(() {
+        _isRodExtended = state == 'extended';
+        _calculatePower();
+      });
     }
+    // Note: _isLoadingState is managed by _initializeState()
   }
 
   void _setupActuatorListener() {
@@ -165,13 +492,18 @@ class _ControlsScreenState extends State<ControlsScreen> {
           final newExtended = state == 'extended';
 
           if (commandRejected) {
-            setState(() {
-              _isCommandProcessing = false;
-              _cooldownRemainingSeconds = 0;
-              _cooldownTimer?.cancel();
-              _isRodExtended = newExtended;
-              _calculatePower();
-            });
+            // Last-write-wins: only revert UI if rejection is for our last command
+            final echoedTs = (data['clientTimestamp'] as num?)?.toInt() ?? 0;
+            if (echoedTs == _lastActuatorCommandTs || echoedTs == 0) {
+              setState(() {
+                _isCommandProcessing = false;
+                _cooldownRemainingSeconds = 0;
+                _cooldownTimer?.cancel();
+                _isRodExtended = newExtended;
+                _calculatePower();
+              });
+              _showRejectionSnackBar('Actuator command blocked by device safety interlock.');
+            }
             return;
           }
 
@@ -185,8 +517,8 @@ class _ControlsScreenState extends State<ControlsScreen> {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
                 content: Text(newExtended
-                    ? '✓ Rod fully extended'
-                    : '✓ Rod fully retracted'),
+                    ? 'Rod fully extended'
+                    : 'Rod fully retracted'),
                 backgroundColor: Colors.green,
                 duration: const Duration(seconds: 2),
               ),
@@ -202,46 +534,31 @@ class _ControlsScreenState extends State<ControlsScreen> {
     );
   }
 
-  // ============================================================
-  // FAN INIT + LISTENER
-  // ============================================================
   Future<void> _initializeFanState() async {
     if (widget.deviceId.isEmpty) return;
-    try {
-      final snapshot = await FirebaseDatabase.instance
-          .ref('devices/${widget.deviceId}/fans')
-          .get();
-
-      if (snapshot.exists && mounted) {
-        final data = snapshot.value as Map<dynamic, dynamic>?;
-        if (data != null) {
-          final state = data['state'] as String?;
-          final speed = data['speed'] as String?;
-          final timerEndsAt = data['timerEndsAt'];
-
-          setState(() {
-            _isDryingSystemOn = state == 'on';
-            _selectedFanMode = _validateSpeed(speed);
-            _calculatePower();
-          });
-
-          // Restore RTDB timer if it exists and is still in the future
-          if (timerEndsAt != null) {
-            final endsAt = (timerEndsAt as num).toInt();
-            final nowMs = DateTime.now().millisecondsSinceEpoch;
-            final remainingMs = endsAt - nowMs;
-
-            if (remainingMs > 0) {
-              _restoreTimer(endsAt, remainingMs);
-            } else {
-              _clearRtdbTimer();
-            }
-          }
+    final snapshot = await FirebaseDatabase.instance
+        .ref('devices/${widget.deviceId}/fans')
+        .get();
+    if (snapshot.exists && mounted) {
+      final data = snapshot.value as Map<dynamic, dynamic>?;
+      if (data != null) {
+        final state = data['state'] as String?;
+        final speed = data['speed'] as String?;
+        final timerEndsAt = data['timerEndsAt'];
+        setState(() {
+          _isDryingSystemOn = state == 'on';
+          _selectedFanMode = _validateSpeed(speed);
+          _calculatePower();
+        });
+        if (timerEndsAt != null) {
+          final endsAt = (timerEndsAt as num).toInt();
+          final remainingMs = endsAt - DateTime.now().millisecondsSinceEpoch;
+          if (remainingMs > 0) _restoreTimer(endsAt, remainingMs);
+          else _clearRtdbTimer();
         }
       }
-    } catch (e) {
-      debugPrint('Initial fan state load: $e');
     }
+    // Note: _isLoadingState is managed by _initializeState()
   }
 
   void _setupFanListener() {
@@ -261,8 +578,26 @@ class _ControlsScreenState extends State<ControlsScreen> {
         final speed = data['speed'] as String?;
         final timerEndsAt = data['timerEndsAt'];
 
+        final commandRejected = data['commandRejected'] as bool? ?? false;
+        final echoedTs = (data['clientTimestamp'] as num?)?.toInt() ?? 0;
+
         if (state == 'on' || state == 'off') {
           final newOn = state == 'on';
+
+          // Last-write-wins: if rejected, only revert UI for our own last command
+          if (commandRejected) {
+            if (echoedTs == _lastFanCommandTs || echoedTs == 0) {
+              setState(() {
+                _isFanCommandProcessing = false;
+                _suppressListenerUpdate = false;
+                _isDryingSystemOn = newOn;
+                if (speed != null) _selectedFanMode = _validateSpeed(speed);
+                _calculatePower();
+              });
+              _showRejectionSnackBar('Fan command blocked by device safety interlock.');
+            }
+            return;
+          }
 
           if (_suppressListenerUpdate) {
             if (newOn == _isDryingSystemOn) {
@@ -302,9 +637,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
     );
   }
 
-  // ============================================================
-  // TIMER — RTDB-backed (Timestamp Logic)
-  // ============================================================
   void _restoreTimer(int endsAtMs, int remainingMs) {
     _dryingTimer?.cancel();
     _timerEndsAt = endsAtMs;
@@ -336,18 +668,23 @@ class _ControlsScreenState extends State<ControlsScreen> {
   void _handleTimerExpiry() {
     _cancelLocalTimer();
 
+    final int ts = DateTime.now().millisecondsSinceEpoch;
+    _lastFanCommandTs = ts;
+
+    // BLE: timer expiry always goes via Firebase (timers are Firebase-backed)
     FirebaseDatabase.instance
         .ref('devices/${widget.deviceId}/fans')
         .update({
       'target': 'off',
       'timerEndsAt': null, 
       'commandRejected': false,
+      'clientTimestamp': ts,
       'lastCommandAt': ServerValue.timestamp,
     }).then((_) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('⏱️ Timer finished — fans turned off'),
+            content: Text('Timer finished — fans turned off'),
             backgroundColor: Colors.blue,
             duration: Duration(seconds: 3),
           ),
@@ -379,7 +716,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
   }
 
   void _startTimerSequence(String duration) {
-    if (_isChildProtectionEnabled) return; // Guard
+    if (_isChildProtectionEnabled) return;
 
     int minutes = int.parse(duration.replaceAll('m', ''));
     int totalMs = minutes * 60 * 1000;
@@ -421,7 +758,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('⏱️ Timer set for $minutes minutes'),
+          content: Text('Timer set for $minutes minutes'),
           backgroundColor: Colors.green,
           duration: const Duration(seconds: 2),
         ),
@@ -430,8 +767,16 @@ class _ControlsScreenState extends State<ControlsScreen> {
   }
 
   void _stopTimerAndTurnOffFans() {
-    if (_isChildProtectionEnabled) return; // Guard
+    if (_isChildProtectionEnabled) return;
     _cancelLocalTimer();
+
+    // BLE: also send fan:off directly if connected
+    if (_isBleConnected) {
+      _sendBleCommand('fan:off');
+    }
+
+    final int ts = DateTime.now().millisecondsSinceEpoch;
+    _lastFanCommandTs = ts;
 
     FirebaseDatabase.instance
         .ref('devices/${widget.deviceId}/fans')
@@ -439,12 +784,13 @@ class _ControlsScreenState extends State<ControlsScreen> {
       'target': 'off',
       'timerEndsAt': null, 
       'commandRejected': false,
+      'clientTimestamp': ts,
       'lastCommandAt': ServerValue.timestamp,
     }).then((_) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('⏹️ Timer stopped — fans turned off'),
+            content: Text('Timer stopped — fans turned off'),
             backgroundColor: Colors.blue,
             duration: Duration(seconds: 2),
           ),
@@ -458,7 +804,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
       _showNoDeviceDialog();
       return;
     }
-    if (_isChildProtectionEnabled) return; // Guard
+    if (_isChildProtectionEnabled) return;
 
     if (!_isDryingSystemOn) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -488,9 +834,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
     _startTimerSequence(duration);
   }
 
-  // ============================================================
-  // FAN TOGGLE — OPTIMISTIC UPDATE
-  // ============================================================
   void _startFanCooldown() {
     _fanCooldownTimer?.cancel();
     setState(() => _fanCooldownRemainingSeconds = 10);
@@ -515,7 +858,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
       _showNoDeviceDialog();
       return;
     }
-    if (_isChildProtectionEnabled) return; // Guard
+    if (_isChildProtectionEnabled) return;
 
     if (_isFanCoolingDown) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -528,8 +871,22 @@ class _ControlsScreenState extends State<ControlsScreen> {
       return;
     }
 
+    // Pre-flight concurrency check: block fan toggle if rod is currently moving
+    if (_isCommandProcessing) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Wait for rod movement to complete before toggling fans.'),
+          backgroundColor: Colors.orange,
+          duration: Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
+
     final bool originalState = _isDryingSystemOn;
     final bool newState = !originalState;
+    final int ts = DateTime.now().millisecondsSinceEpoch;
+    _lastFanCommandTs = ts;
 
     setState(() {
       _isDryingSystemOn = newState;
@@ -542,6 +899,30 @@ class _ControlsScreenState extends State<ControlsScreen> {
       _calculatePower();
     });
 
+    // --- BLE MODE: send command directly to ESP32 ---
+    // Always also write to Firebase (fire-and-forget) so cloud state stays in
+    // sync with local state. This is the last-write-wins guarantee: when internet
+    // returns, Firebase already has the correct state and won't overwrite the UI.
+    if (_isBleConnected) {
+      final String cmd = newState ? 'fan:on:$_selectedFanMode' : 'fan:off';
+      final bool sent = await _sendBleCommand(cmd);
+      if (sent) {
+        _startFanCooldown();
+        // Fire-and-forget to Firebase — keeps cloud in sync even if offline now
+        FirebaseDatabase.instance.ref('devices/${widget.deviceId}/fans').update({
+          'target': newState ? 'on' : 'off',
+          if (newState) 'speed': _selectedFanMode,
+          'timerEndsAt': newState ? null : null,
+          'commandRejected': false,
+          'clientTimestamp': ts,
+          'lastCommandAt': ServerValue.timestamp,
+        }).catchError((_) {}); // ignore — may be offline, that's fine
+        return;
+      }
+      // BLE failed — fall through to Firebase
+    }
+
+    // --- FIREBASE MODE ---
     try {
       if (!newState) {
         await FirebaseDatabase.instance
@@ -550,6 +931,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
           'target': 'off',
           'timerEndsAt': null, 
           'commandRejected': false,
+          'clientTimestamp': ts,
           'lastCommandAt': ServerValue.timestamp,
         });
       } else {
@@ -559,6 +941,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
           'target': 'on',
           'speed': _selectedFanMode,
           'commandRejected': false,
+          'clientTimestamp': ts,
           'lastCommandAt': ServerValue.timestamp,
         });
       }
@@ -584,23 +967,42 @@ class _ControlsScreenState extends State<ControlsScreen> {
     }
   }
 
-  // ============================================================
-  // FAN SPEED
-  // ============================================================
   Future<void> _handleFanModeSelection(String rtdbValue) async {
     if (widget.deviceId.isEmpty) {
       _showNoDeviceDialog();
       return;
     }
-    if (_isChildProtectionEnabled) return; // Guard
+    if (_isChildProtectionEnabled) return;
 
     final validatedSpeed = _validateSpeed(rtdbValue);
     setState(() => _selectedFanMode = validatedSpeed);
 
+    // --- BLE MODE ---
+    if (_isBleConnected) {
+      if (_isDryingSystemOn) {
+        await _sendBleCommand('fan:on:$validatedSpeed');
+      }
+      // Fire-and-forget to Firebase for LWW cloud sync
+      final int ts = DateTime.now().millisecondsSinceEpoch;
+      _lastFanCommandTs = ts;
+      FirebaseDatabase.instance.ref('devices/${widget.deviceId}/fans').update({
+        'speed': validatedSpeed,
+        if (_isDryingSystemOn) 'target': 'on',
+        'commandRejected': false,
+        'clientTimestamp': ts,
+        'lastCommandAt': ServerValue.timestamp,
+      }).catchError((_) {});
+      return;
+    }
+
+    // --- FIREBASE MODE ---
     try {
+      final int ts = DateTime.now().millisecondsSinceEpoch;
+      _lastFanCommandTs = ts;
       final Map<String, dynamic> update = {
         'speed': validatedSpeed,
         'commandRejected': false,
+        'clientTimestamp': ts,
         'lastCommandAt': ServerValue.timestamp,
       };
 
@@ -627,9 +1029,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
     }
   }
 
-  // ============================================================
-  // ACTUATOR CONTROL
-  // ============================================================
   void _startCooldown() {
     _cooldownTimer?.cancel();
     setState(() => _cooldownRemainingSeconds = 60);
@@ -655,16 +1054,59 @@ class _ControlsScreenState extends State<ControlsScreen> {
       _showNoDeviceDialog();
       return;
     }
-    if (_isCoolingDown || _isCommandProcessing || _isChildProtectionEnabled) return; // Guard
+    if (_isCoolingDown || _isCommandProcessing || _isChildProtectionEnabled) return;
+
+    // Pre-flight concurrency check: block rod movement if fan command is in-flight
+    if (_isFanCommandProcessing) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Wait for fan command to complete before moving rod.'),
+          backgroundColor: Colors.orange,
+          duration: Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
 
     setState(() => _isCommandProcessing = true);
+    final int ts = DateTime.now().millisecondsSinceEpoch;
+    _lastActuatorCommandTs = ts;
 
+    // --- BLE MODE ---
+    if (_isBleConnected) {
+      final String cmd = extend ? 'extend' : 'retract';
+      final bool sent = await _sendBleCommand(cmd);
+      if (sent) {
+        _startCooldown();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(extend ? 'Extending rod... (~60s)' : 'Retracting rod... (~60s)'),
+              backgroundColor: Colors.blue,
+              duration: const Duration(seconds: 3),
+            ),
+          );
+        }
+        // Fire-and-forget to Firebase for LWW cloud sync
+        FirebaseDatabase.instance.ref('devices/${widget.deviceId}/actuator').update({
+          'target': extend ? 'extended' : 'retracted',
+          'commandRejected': false,
+          'clientTimestamp': ts,
+          'lastCommandAt': ServerValue.timestamp,
+        }).catchError((_) {});
+        return;
+      }
+      // BLE failed — fall through to Firebase
+    }
+
+    // --- FIREBASE MODE ---
     try {
       await FirebaseDatabase.instance
           .ref('devices/${widget.deviceId}/actuator')
           .update({
         'target': extend ? 'extended' : 'retracted',
         'commandRejected': false,
+        'clientTimestamp': ts,
         'lastCommandAt': ServerValue.timestamp,
       });
 
@@ -696,9 +1138,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
     }
   }
 
-  // ============================================================
-  // HELPERS
-  // ============================================================
   String _validateSpeed(String? speed) {
     const validSpeeds = ['low', 'mid', 'high'];
     if (speed != null && validSpeeds.contains(speed)) {
@@ -780,18 +1219,14 @@ class _ControlsScreenState extends State<ControlsScreen> {
     );
   }
 
-  // ============================================================
-  // BUILD
-  // ============================================================
   @override
   Widget build(BuildContext context) {
     final size = MediaQuery.of(context).size;
     final double padding = size.width * 0.05;
     bool isRunning = _isDryingSystemOn && _dryingTimer != null;
 
-    // ADDED: Include Child Protection in the lock logic
     final bool rodButtonLocked =
-        _isDryingSystemOn || _isCoolingDown || _isCommandProcessing || _isChildProtectionEnabled;
+        _isDryingSystemOn || _isCoolingDown || _isCommandProcessing || _isChildProtectionEnabled || _isFanCommandProcessing;
     final bool fanButtonLocked = 
         _isRodExtended || _isCommandProcessing || _isChildProtectionEnabled;
 
@@ -837,7 +1272,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
                 ],
               ),
               
-              // --- CHILD PROTECTION BANNER ---
               if (_isChildProtectionEnabled)
                 Container(
                   margin: const EdgeInsets.only(top: 24),
@@ -1023,10 +1457,8 @@ class _ControlsScreenState extends State<ControlsScreen> {
               const SizedBox(height: 32),
 
               Opacity(
-                // ADDED: Make it look disabled if child protection is ON
                 opacity: (_isDryingSystemOn && !_isChildProtectionEnabled) ? 1.0 : 0.5,
                 child: AbsorbPointer(
-                  // ADDED: Prevent taps if child protection is ON
                   absorbing: !_isDryingSystemOn || _isChildProtectionEnabled,
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,

@@ -67,7 +67,6 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  // --- NEW: NO DEVICE WARNING MODAL ---
   void _showNoDeviceDialog() {
     showDialog(
       context: context,
@@ -128,10 +127,9 @@ class _HomeScreenState extends State<HomeScreen> {
           currentIndex: _selectedIndex,
           
           onTap: (index) {
-            // FIX: Removed "|| index == 3" so Alerts screen is not blocked anymore
             if (index == 1 && (_currentDeviceId == null || _currentDeviceId!.isEmpty)) {
               _showNoDeviceDialog();
-              return; // Stop navigation
+              return; 
             }
 
             if (index == 2) {
@@ -201,6 +199,8 @@ class _DashboardContentState extends State<DashboardContent> {
   // User data
   String _userName = "Loading...";
   String _userEmail = "Loading...";
+  String _userAddress = "";
+  String _userRegion = ""; 
   String _deviceId = "N/A";
   String _memberSince = "Loading...";
   String? _userProfileUrl;
@@ -209,8 +209,12 @@ class _DashboardContentState extends State<DashboardContent> {
   
   bool _isProfileIncomplete = false;
 
-  // Weather data
+  // Weather State Variables (Replaces FutureBuilder)
   String _currentCity = "Locating...";
+  String _weatherTemp = "--";
+  String _weatherCondition = "Loading...";
+  String _weatherDesc = "Fetching local weather...";
+  IconData _weatherIcon = Icons.cloud;
   
   // Sensor data
   double _sensorHumidity = 0;
@@ -234,7 +238,6 @@ class _DashboardContentState extends State<DashboardContent> {
   void initState() {
     super.initState();
     _fetchUserData();
-    _fetchWeather();
   }
 
   @override
@@ -352,6 +355,8 @@ class _DashboardContentState extends State<DashboardContent> {
         String? firstName = userData['firstName'];
         String? lastName = userData['lastName'];
         String? contactNumber = userData['contactNumber'];
+        String address = userData['address'] ?? "";
+        String region = userData['region'] ?? ""; 
         String email = userData['email'] ?? currentUser.email ?? 'No email';
         String? imageUrl = userData['image_url'];
         Timestamp? createdAt = userData['createdAt'];
@@ -383,6 +388,8 @@ class _DashboardContentState extends State<DashboardContent> {
           setState(() {
             _userName = finalDisplayName;
             _userEmail = email;
+            _userAddress = address;
+            _userRegion = region;
             _deviceId = deviceId;
             _memberSince = memberSince;
             _userProfileUrl = (imageUrl != null && imageUrl.isNotEmpty) ? imageUrl : null;
@@ -391,6 +398,7 @@ class _DashboardContentState extends State<DashboardContent> {
           });
 
           _startSensorUpdates();
+          _fetchWeather(); // Fetch weather ONLY after Firestore is loaded
         }
       } else {
         if (mounted) {
@@ -466,21 +474,52 @@ class _DashboardContentState extends State<DashboardContent> {
     _rainConfidenceHistory.removeWhere((point) => point.timestamp.isBefore(cutoff));
   }
 
-  Future<Map<String, dynamic>> _fetchWeather() async {
-    try {
-      final locationResponse = await http.get(Uri.parse('http://ip-api.com/json'));
-      double lat = 14.65;
-      double long = 120.98;
+  Future<void> _fetchWeather() async {
+    String searchLocation = _userRegion.isNotEmpty ? _userRegion : _userAddress;
 
-      if (locationResponse.statusCode == 200) {
-        final locData = json.decode(locationResponse.body);
-        lat = locData['lat'];
-        long = locData['lon'];
-        if (mounted) setState(() => _currentCity = locData['city'] ?? "Unknown City");
+    if (searchLocation.isEmpty) {
+      if (mounted) {
+        setState(() {
+          _currentCity = "Location Not Set";
+          _weatherTemp = "--";
+          _weatherCondition = "Setup Location";
+          _weatherDesc = "Tap your profile to add region";
+          _weatherIcon = Icons.location_off;
+        });
+      }
+      return;
+    }
+
+    try {
+      // Split "Manila, Philippines" and only send "Manila" to avoid API crash
+      String queryName = searchLocation.split(',').first.trim();
+
+      final geoUrl = 'https://geocoding-api.open-meteo.com/v1/search?name=${Uri.encodeComponent(queryName)}&count=1';
+      final geoResponse = await http.get(Uri.parse(geoUrl));
+
+      if (geoResponse.statusCode != 200) throw Exception('Geocoding failed');
+
+      final geoData = json.decode(geoResponse.body);
+      
+      if (!geoData.containsKey('results') || (geoData['results'] as List).isEmpty) {
+        if (mounted) {
+          setState(() {
+            _currentCity = "Unknown Region";
+            _weatherTemp = "--";
+            _weatherCondition = "Invalid Location";
+            _weatherDesc = "Please update your region";
+            _weatherIcon = Icons.wrong_location_outlined;
+          });
+        }
+        return;
       }
 
-      final String url = 'https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$long&current_weather=true';
-      final weatherResponse = await http.get(Uri.parse(url));
+      final double lat = geoData['results'][0]['latitude'];
+      final double long = geoData['results'][0]['longitude'];
+      final String matchedCity = geoData['results'][0]['name'];
+
+      final String weatherUrl = 'https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$long&current_weather=true';
+      final weatherResponse = await http.get(Uri.parse(weatherUrl));
 
       if (weatherResponse.statusCode == 200) {
         final data = json.decode(weatherResponse.body);
@@ -490,22 +529,29 @@ class _DashboardContentState extends State<DashboardContent> {
 
         if (mounted) {
           setState(() {
+            _currentCity = matchedCity;
+            _weatherTemp = "${(currentWeather['temperature'] as num).round()}°"; 
+            _weatherCondition = weatherInfo['condition'];
+            _weatherDesc = weatherInfo['description'];
+            _weatherIcon = weatherInfo['icon'];
+
             _weatherHistory.add(currentWeather['temperature']);
             if (_weatherHistory.length > 6) _weatherHistory.removeAt(0);
           });
         }
-
-        return {
-          "temp": "${currentWeather['temperature'].round()}°",
-          "condition": weatherInfo['condition'],
-          "description": weatherInfo['description'],
-          "icon": weatherInfo['icon'],
-        };
       } else {
-        throw Exception('Failed');
+        throw Exception('Weather fetch failed');
       }
     } catch (e) {
-      return {"temp": "--", "condition": "Offline", "description": "Check internet", "icon": Icons.wifi_off};
+      debugPrint("Weather Error: $e"); 
+      if (mounted) {
+        setState(() {
+          _weatherTemp = "--";
+          _weatherCondition = "Offline";
+          _weatherDesc = "Check internet connection";
+          _weatherIcon = Icons.wifi_off;
+        });
+      }
     }
   }
 
@@ -764,7 +810,7 @@ class _DashboardContentState extends State<DashboardContent> {
                       const SizedBox(height: 8),
                       Text(
                           title == "Weather" 
-                            ? "Weather conditions are updated periodically based on your location. This data is independent of your local sensors."
+                            ? "Weather conditions are updated periodically based on your region. This data is independent of your local sensors."
                             : (value == "0.0" || value == "0" || _currentDeviceConnected == null ? "Connect your Smart Rack sensors to see real-time status." : statusMsg),
                           style: const TextStyle(fontSize: 14, color: Color(0xFF5A6175), height: 1.5)),
                     ],
@@ -902,47 +948,41 @@ class _DashboardContentState extends State<DashboardContent> {
             ] else 
               const SizedBox(height: 24),
 
-            FutureBuilder<Map<String, dynamic>>(
-              future: _fetchWeather(),
-              builder: (context, snapshot) {
-                final data = snapshot.data ?? {"temp": "--", "condition": "Loading...", "description": "...", "icon": Icons.wb_sunny};
-                return GestureDetector(
-                  onTap: () => _showDetailModal("Weather", data['temp'], [], "Current weather is optimal."),
-                  child: Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(24),
-                    decoration: BoxDecoration(
-                      gradient: const LinearGradient(colors: [Color(0xFF2962FF), Color(0xFF448AFF)], begin: Alignment.topLeft, end: Alignment.bottomRight),
-                      borderRadius: BorderRadius.circular(24),
-                      boxShadow: [BoxShadow(color: Colors.blue.withOpacity(0.3), blurRadius: 20, offset: const Offset(0, 10))],
-                    ),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                                decoration: BoxDecoration(color: Colors.white.withOpacity(0.2), borderRadius: BorderRadius.circular(20)),
-                                child: Row(mainAxisSize: MainAxisSize.min, children: [const Icon(Icons.location_on, color: Colors.white, size: 12), const SizedBox(width: 4), Text(_currentCity, style: const TextStyle(color: Colors.white, fontSize: 12))]),
-                              ),
-                              const SizedBox(height: 12),
-                              Text(data['condition'], style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold)),
-                              const SizedBox(height: 6),
-                              Text(data['description'], style: TextStyle(color: Colors.white.withOpacity(0.9), fontSize: 13, height: 1.4)),
-                              const SizedBox(height: 10),
-                              Text(data['temp'], style: const TextStyle(color: Colors.white, fontSize: 32, fontWeight: FontWeight.bold)),
-                            ],
+            GestureDetector(
+              onTap: () => _showDetailModal("Weather", _weatherTemp, [], "Current weather is optimal."),
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(24),
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(colors: [Color(0xFF2962FF), Color(0xFF448AFF)], begin: Alignment.topLeft, end: Alignment.bottomRight),
+                  borderRadius: BorderRadius.circular(24),
+                  boxShadow: [BoxShadow(color: Colors.blue.withOpacity(0.3), blurRadius: 20, offset: const Offset(0, 10))],
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                            decoration: BoxDecoration(color: Colors.white.withOpacity(0.2), borderRadius: BorderRadius.circular(20)),
+                            child: Row(mainAxisSize: MainAxisSize.min, children: [const Icon(Icons.location_on, color: Colors.white, size: 12), const SizedBox(width: 4), Text(_currentCity, style: const TextStyle(color: Colors.white, fontSize: 12))]),
                           ),
-                        ),
-                        Icon(data['icon'], size: 60, color: Colors.yellowAccent),
-                      ],
+                          const SizedBox(height: 12),
+                          Text(_weatherCondition, style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold)),
+                          const SizedBox(height: 6),
+                          Text(_weatherDesc, style: TextStyle(color: Colors.white.withOpacity(0.9), fontSize: 13, height: 1.4)),
+                          const SizedBox(height: 10),
+                          Text(_weatherTemp, style: const TextStyle(color: Colors.white, fontSize: 32, fontWeight: FontWeight.bold)),
+                        ],
+                      ),
                     ),
-                  ),
-                );
-              },
+                    Icon(_weatherIcon, size: 60, color: Colors.yellowAccent),
+                  ],
+                ),
+              ),
             ),
 
             const SizedBox(height: 24),
