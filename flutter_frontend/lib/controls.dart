@@ -900,11 +900,23 @@ class _ControlsScreenState extends State<ControlsScreen> {
     });
 
     // --- BLE MODE: send command directly to ESP32 ---
+    // Always also write to Firebase (fire-and-forget) so cloud state stays in
+    // sync with local state. This is the last-write-wins guarantee: when internet
+    // returns, Firebase already has the correct state and won't overwrite the UI.
     if (_isBleConnected) {
       final String cmd = newState ? 'fan:on:$_selectedFanMode' : 'fan:off';
       final bool sent = await _sendBleCommand(cmd);
       if (sent) {
         _startFanCooldown();
+        // Fire-and-forget to Firebase — keeps cloud in sync even if offline now
+        FirebaseDatabase.instance.ref('devices/${widget.deviceId}/fans').update({
+          'target': newState ? 'on' : 'off',
+          if (newState) 'speed': _selectedFanMode,
+          'timerEndsAt': newState ? null : null,
+          'commandRejected': false,
+          'clientTimestamp': ts,
+          'lastCommandAt': ServerValue.timestamp,
+        }).catchError((_) {}); // ignore — may be offline, that's fine
         return;
       }
       // BLE failed — fall through to Firebase
@@ -970,6 +982,16 @@ class _ControlsScreenState extends State<ControlsScreen> {
       if (_isDryingSystemOn) {
         await _sendBleCommand('fan:on:$validatedSpeed');
       }
+      // Fire-and-forget to Firebase for LWW cloud sync
+      final int ts = DateTime.now().millisecondsSinceEpoch;
+      _lastFanCommandTs = ts;
+      FirebaseDatabase.instance.ref('devices/${widget.deviceId}/fans').update({
+        'speed': validatedSpeed,
+        if (_isDryingSystemOn) 'target': 'on',
+        'commandRejected': false,
+        'clientTimestamp': ts,
+        'lastCommandAt': ServerValue.timestamp,
+      }).catchError((_) {});
       return;
     }
 
@@ -1065,6 +1087,13 @@ class _ControlsScreenState extends State<ControlsScreen> {
             ),
           );
         }
+        // Fire-and-forget to Firebase for LWW cloud sync
+        FirebaseDatabase.instance.ref('devices/${widget.deviceId}/actuator').update({
+          'target': extend ? 'extended' : 'retracted',
+          'commandRejected': false,
+          'clientTimestamp': ts,
+          'lastCommandAt': ServerValue.timestamp,
+        }).catchError((_) {});
         return;
       }
       // BLE failed — fall through to Firebase
