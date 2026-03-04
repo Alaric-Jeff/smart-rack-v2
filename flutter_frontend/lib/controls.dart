@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'dart:async';
+import 'dart:convert';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
@@ -204,8 +205,8 @@ class _ControlsScreenState extends State<ControlsScreen> {
             await char.setNotifyValue(true);
             char.lastValueStream.listen((value) {
               if (!mounted || value.isEmpty) return;
-              final json = String.fromCharCodes(value);
-              if (json.startsWith('{')) _applyBleStatus(json);
+              final jsonStr = String.fromCharCodes(value);
+              if (jsonStr.startsWith('{')) _applyBleStatus(jsonStr);
             });
             debugPrint('[BLE] Subscribed to status notifications');
           } catch (e) {
@@ -287,9 +288,9 @@ class _ControlsScreenState extends State<ControlsScreen> {
       late StreamSubscription sub;
       sub = statusChar.lastValueStream.listen((value) {
         if (value.isNotEmpty) {
-          final json = String.fromCharCodes(value);
-          if (json.startsWith('{')) {
-            completer.complete(json);
+          final jsonStr = String.fromCharCodes(value);
+          if (jsonStr.startsWith('{')) {
+            completer.complete(jsonStr);
             sub.cancel();
           }
         }
@@ -297,7 +298,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
 
       await _sendBleCommand('status');
 
-      final json = await completer.future.timeout(
+      final jsonResponse = await completer.future.timeout(
         const Duration(seconds: 3),
         onTimeout: () {
           sub.cancel();
@@ -305,39 +306,39 @@ class _ControlsScreenState extends State<ControlsScreen> {
         },
       );
 
-      if (json.isNotEmpty && mounted) {
-        _applyBleStatus(json);
-        debugPrint('[BLE INIT] State loaded from ESP32: $json');
+      if (jsonResponse.isNotEmpty && mounted) {
+        _applyBleStatus(jsonResponse);
+        debugPrint('[BLE INIT] State loaded from ESP32: $jsonResponse');
       }
     } catch (e) {
       debugPrint('[BLE INIT] Error fetching BLE state: $e');
     }
   }
 
-  void _applyBleStatus(String json) {
+  // FIX: Added safe JSON decoding to extract the timer info from the ESP32
+  void _applyBleStatus(String jsonStr) {
     try {
-      String? _extract(String key) {
-        final pattern = '"$key":"';
-        final start = json.indexOf(pattern);
-        if (start == -1) return null;
-        final valueStart = start + pattern.length;
-        final end = json.indexOf('"', valueStart);
-        return end == -1 ? null : json.substring(valueStart, end);
-      }
-
-      final actuator = _extract('actuator');
-      final fan      = _extract('fan');
-      final fanSpeed = _extract('fanSpeed');
+      final data = json.decode(jsonStr);
+      final actuator = data['actuator'];
+      final fan = data['fan'];
+      final fanSpeed = data['fanSpeed'];
+      final timerRemaining = data['timerRemaining'];
 
       if (!mounted) return;
       setState(() {
         if (actuator != null) _isRodExtended = actuator == 'extended';
-        if (fan      != null) {
+        if (fan != null) {
           _isDryingSystemOn = fan == 'on';
-          // Ensure we clear the UI timer if ESP32 autonomously turned off the fan
           if (!_isDryingSystemOn) _cancelLocalTimer();
         }
         if (fanSpeed != null) _selectedFanMode = _validateSpeed(fanSpeed);
+        
+        // Re-sync the Flutter UI countdown with the ESP32's internal countdown
+        if (timerRemaining != null && timerRemaining is int && timerRemaining > 0) {
+          final endsAtMs = DateTime.now().millisecondsSinceEpoch + (timerRemaining * 1000);
+          _restoreTimer(endsAtMs, timerRemaining * 1000);
+        }
+        
         _calculatePower();
       });
     } catch (e) {
@@ -544,8 +545,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
           setState(() {
             _isDryingSystemOn = newOn;
             
-            // If the ESP32 autonomously turned the fan off via its internal timer, 
-            // force the app to cancel its UI timer and sync.
             if (!newOn) {
                _cancelLocalTimer();
             }
@@ -612,8 +611,10 @@ class _ControlsScreenState extends State<ControlsScreen> {
     final int ts = DateTime.now().millisecondsSinceEpoch;
     _lastFanCommandTs = ts;
 
-    // Both Firebase and the ESP32 handle timer expiries simultaneously, but 
-    // it's good practice to ensure the cloud stays clean.
+    if (_isBleConnected) {
+      _sendBleCommand('fan:off');
+    }
+
     FirebaseDatabase.instance
         .ref('devices/${widget.deviceId}/fans')
         .update({
@@ -674,7 +675,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
       _calculatePower();
     });
 
-    // --- FIX: TELL ESP32 ABOUT THE TIMER DURATION ---
     if (_isBleConnected) {
       _sendBleCommand('fan:on:$_selectedFanMode:$minutes');
     }
@@ -682,9 +682,9 @@ class _ControlsScreenState extends State<ControlsScreen> {
     FirebaseDatabase.instance
         .ref('devices/${widget.deviceId}/fans')
         .update({
-      'target': 'on', // Ensure Firebase knows the fan must be ON
+      'target': 'on', 
       'speed': _selectedFanMode,
-      'duration': minutes, // New parameter for the ESP32
+      'duration': minutes, 
       'timerEndsAt': endsAtMs,
       'lastCommandAt': ServerValue.timestamp,
     });
@@ -733,7 +733,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
         .update({
       'target': 'off',
       'timerEndsAt': null, 
-      'duration': 0, // Clear duration
+      'duration': 0, 
       'commandRejected': false,
       'clientTimestamp': ts,
       'lastCommandAt': ServerValue.timestamp,
@@ -850,7 +850,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
     });
 
     if (_isBleConnected) {
-      // Send duration as 0 (continuous mode)
       final String cmd = newState ? 'fan:on:$_selectedFanMode:0' : 'fan:off';
       final bool sent = await _sendBleCommand(cmd);
       if (sent) {
@@ -858,7 +857,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
         FirebaseDatabase.instance.ref('devices/${widget.deviceId}/fans').update({
           'target': newState ? 'on' : 'off',
           if (newState) 'speed': _selectedFanMode,
-          if (newState) 'duration': 0, // Continuous
+          if (newState) 'duration': 0, 
           'timerEndsAt': newState ? null : null,
           'commandRejected': false,
           'clientTimestamp': ts,
@@ -886,7 +885,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
             .update({
           'target': 'on',
           'speed': _selectedFanMode,
-          'duration': 0, // Continuous
+          'duration': 0, 
           'commandRejected': false,
           'clientTimestamp': ts,
           'lastCommandAt': ServerValue.timestamp,
