@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'dart:async';
 import 'dart:convert';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
@@ -17,6 +18,14 @@ class ControlsScreen extends StatefulWidget {
 }
 
 class _ControlsScreenState extends State<ControlsScreen> {
+  // ==========================================================
+  // FIX: Centralized Database Instance to fix the Region Bug
+  // ==========================================================
+  final FirebaseDatabase _db = FirebaseDatabase.instanceFor(
+    app: Firebase.app(),
+    databaseURL: 'https://smart-drying-iot-default-rtdb.asia-southeast1.firebasedatabase.app/',
+  );
+
   // --- CHILD PROTECTION STATE ---
   bool _isChildProtectionEnabled = false;
 
@@ -111,7 +120,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
     _connectivityTimer = Timer.periodic(const Duration(seconds: 5), (_) async {
       if (!mounted) return;
       try {
-        final snap = await FirebaseDatabase.instance
+        final snap = await _db
             .ref('devices/${widget.deviceId}/actuator/state')
             .get()
             .timeout(const Duration(seconds: 3));
@@ -315,7 +324,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
     }
   }
 
-  // FIX: Added safe JSON decoding to extract the timer info from the ESP32
   void _applyBleStatus(String jsonStr) {
     try {
       final data = json.decode(jsonStr);
@@ -333,7 +341,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
         }
         if (fanSpeed != null) _selectedFanMode = _validateSpeed(fanSpeed);
         
-        // Re-sync the Flutter UI countdown with the ESP32's internal countdown
         if (timerRemaining != null && timerRemaining is int && timerRemaining > 0) {
           final endsAtMs = DateTime.now().millisecondsSinceEpoch + (timerRemaining * 1000);
           _restoreTimer(endsAtMs, timerRemaining * 1000);
@@ -384,7 +391,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
   void _setupSettingsListener() {
     if (widget.deviceId.isEmpty) return;
 
-    _settingsListener = FirebaseDatabase.instance
+    _settingsListener = _db
         .ref('devices/${widget.deviceId}/settings/childProtection')
         .onValue
         .listen((DatabaseEvent event) {
@@ -398,7 +405,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
 
   Future<void> _initializeActuatorState() async {
     if (widget.deviceId.isEmpty) return;
-    final snapshot = await FirebaseDatabase.instance
+    final snapshot = await _db
         .ref('devices/${widget.deviceId}/actuator/state')
         .get();
     if (snapshot.exists && mounted) {
@@ -413,7 +420,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
   void _setupActuatorListener() {
     if (widget.deviceId.isEmpty) return;
 
-    _actuatorListener = FirebaseDatabase.instance
+    _actuatorListener = _db
         .ref('devices/${widget.deviceId}/actuator')
         .onValue
         .listen(
@@ -473,7 +480,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
 
   Future<void> _initializeFanState() async {
     if (widget.deviceId.isEmpty) return;
-    final snapshot = await FirebaseDatabase.instance
+    final snapshot = await _db
         .ref('devices/${widget.deviceId}/fans')
         .get();
     if (snapshot.exists && mounted) {
@@ -500,7 +507,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
   void _setupFanListener() {
     if (widget.deviceId.isEmpty) return;
 
-    _fanListener = FirebaseDatabase.instance
+    _fanListener = _db
         .ref('devices/${widget.deviceId}/fans')
         .onValue
         .listen(
@@ -615,7 +622,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
       _sendBleCommand('fan:off');
     }
 
-    FirebaseDatabase.instance
+    _db
         .ref('devices/${widget.deviceId}/fans')
         .update({
       'target': 'off',
@@ -651,7 +658,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
 
   Future<void> _clearRtdbTimer() async {
     try {
-      await FirebaseDatabase.instance
+      await _db
           .ref('devices/${widget.deviceId}/fans/timerEndsAt')
           .remove();
     } catch (e) {
@@ -679,7 +686,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
       _sendBleCommand('fan:on:$_selectedFanMode:$minutes');
     }
 
-    FirebaseDatabase.instance
+    _db
         .ref('devices/${widget.deviceId}/fans')
         .update({
       'target': 'on', 
@@ -728,7 +735,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
     final int ts = DateTime.now().millisecondsSinceEpoch;
     _lastFanCommandTs = ts;
 
-    FirebaseDatabase.instance
+    _db
         .ref('devices/${widget.deviceId}/fans')
         .update({
       'target': 'off',
@@ -854,7 +861,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
       final bool sent = await _sendBleCommand(cmd);
       if (sent) {
         _startFanCooldown();
-        FirebaseDatabase.instance.ref('devices/${widget.deviceId}/fans').update({
+        _db.ref('devices/${widget.deviceId}/fans').update({
           'target': newState ? 'on' : 'off',
           if (newState) 'speed': _selectedFanMode,
           if (newState) 'duration': 0, 
@@ -869,7 +876,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
 
     try {
       if (!newState) {
-        await FirebaseDatabase.instance
+        await _db
             .ref('devices/${widget.deviceId}/fans')
             .update({
           'target': 'off',
@@ -880,7 +887,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
           'lastCommandAt': ServerValue.timestamp,
         });
       } else {
-        await FirebaseDatabase.instance
+        await _db
             .ref('devices/${widget.deviceId}/fans')
             .update({
           'target': 'on',
@@ -931,7 +938,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
       }
       final int ts = DateTime.now().millisecondsSinceEpoch;
       _lastFanCommandTs = ts;
-      FirebaseDatabase.instance.ref('devices/${widget.deviceId}/fans').update({
+      _db.ref('devices/${widget.deviceId}/fans').update({
         'speed': validatedSpeed,
         if (_isDryingSystemOn) 'target': 'on',
         if (_isDryingSystemOn) 'duration': currentTimerMins,
@@ -957,14 +964,14 @@ class _ControlsScreenState extends State<ControlsScreen> {
         update['duration'] = currentTimerMins;
       }
 
-      await FirebaseDatabase.instance
+      await _db
           .ref('devices/${widget.deviceId}/fans')
           .update(update);
 
     } catch (e) {
       debugPrint('Fan mode error: $e');
       if (mounted) {
-        final snapshot = await FirebaseDatabase.instance
+        final snapshot = await _db
             .ref('devices/${widget.deviceId}/fans/speed')
             .get();
         if (snapshot.exists && mounted) {
@@ -1032,7 +1039,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
             ),
           );
         }
-        FirebaseDatabase.instance.ref('devices/${widget.deviceId}/actuator').update({
+        _db.ref('devices/${widget.deviceId}/actuator').update({
           'target': extend ? 'extended' : 'retracted',
           'commandRejected': false,
           'clientTimestamp': ts,
@@ -1043,7 +1050,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
     }
 
     try {
-      await FirebaseDatabase.instance
+      await _db
           .ref('devices/${widget.deviceId}/actuator')
           .update({
         'target': extend ? 'extended' : 'retracted',
