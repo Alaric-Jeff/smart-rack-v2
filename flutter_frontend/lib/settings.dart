@@ -84,6 +84,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   // --- FETCH USER DATA ---
+// --- FETCH USER DATA ---
   Future<void> _fetchUserData({bool showLoading = false}) async {
     try {
       final bool shouldShowLoading = showLoading || _userName == "Loading...";
@@ -115,8 +116,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
         String? firstName = data['firstName'];
         String? lastName = data['lastName'];
         String email = data['email'] ?? user.email ?? 'No email';
-        String? photoUrl = data['photoUrl'];
         Timestamp? createdAt = data['createdAt'];
+
+        // FIX: Match home.dart exactly. Fetch 'image_url' (Cloudinary) instead of 'photoUrl' (SSO)
+        String? imageUrl = data['image_url'];
 
         bool is2FA = data['is2FAEnabled'] ?? false;
 
@@ -157,7 +160,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
             _deviceId = displayDeviceId;
             _actualDeviceId = currentDevId;
             _memberSince = memberSince;
-            _userProfileUrl = photoUrl;
+            
+            // FIX: Exact same logic as home.dart. Sets to null if empty, triggering your initials UI.
+            _userProfileUrl = (imageUrl != null && imageUrl.isNotEmpty) ? imageUrl : null;
+            
             _is2FAEnabled = is2FA;
             _isLoadingUserData = false;
           });
@@ -170,7 +176,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             _deviceId = "LD-${user.uid.substring(0, 8).toUpperCase()}";
             _actualDeviceId = null;
             _memberSince = "Recently";
-            _userProfileUrl = user.photoURL;
+            _userProfileUrl = null; 
             _isLoadingUserData = false;
           });
         }
