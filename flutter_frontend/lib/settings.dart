@@ -1,5 +1,3 @@
-//settings.dart
-
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -25,7 +23,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _autoRetract = false;
   bool _childProtection = false; // REPLACED _safetyLock
   bool _notificationsEnabled = true;
-  double _rainSensitivity = 0.0;
 
   // --- 2FA State ---
   bool _is2FAEnabled = false;
@@ -61,7 +58,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
         _autoRetract = prefs.getBool('auto_retract') ?? false;
         _childProtection = prefs.getBool('child_protection') ?? false;
         _notificationsEnabled = prefs.getBool('notifications') ?? true;
-        _rainSensitivity = prefs.getDouble('rain_sensitivity') ?? 0.0;
       });
     } catch (e) {
       debugPrint("Error loading settings: $e");
@@ -115,7 +111,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         String? firstName = data['firstName'];
         String? lastName = data['lastName'];
         String email = data['email'] ?? user.email ?? 'No email';
-        String? photoUrl = data['photoUrl'];
+        String? imageUrl = data['image_url'];
         Timestamp? createdAt = data['createdAt'];
 
         bool is2FA = data['is2FAEnabled'] ?? false;
@@ -157,7 +153,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             _deviceId = displayDeviceId;
             _actualDeviceId = currentDevId;
             _memberSince = memberSince;
-            _userProfileUrl = photoUrl;
+            _userProfileUrl = (imageUrl != null && imageUrl.isNotEmpty) ? imageUrl : null;
             _is2FAEnabled = is2FA;
             _isLoadingUserData = false;
           });
@@ -170,7 +166,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             _deviceId = "LD-${user.uid.substring(0, 8).toUpperCase()}";
             _actualDeviceId = null;
             _memberSince = "Recently";
-            _userProfileUrl = user.photoURL;
+            _userProfileUrl = null; 
             _isLoadingUserData = false;
           });
         }
@@ -477,7 +473,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (key == 'auto_retract') _autoRetract = value;
       if (key == 'child_protection') _childProtection = value;
       if (key == 'notifications') _notificationsEnabled = value;
-      if (key == 'rain_sensitivity') _rainSensitivity = value;
     });
 
     try {
@@ -486,8 +481,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (key == 'child_protection')
         await prefs.setBool('child_protection', value);
       if (key == 'notifications') await prefs.setBool('notifications', value);
-      if (key == 'rain_sensitivity')
-        await prefs.setDouble('rain_sensitivity', value);
     } catch (e) {
       debugPrint("Error saving setting to SharedPreferences: $e");
     }
@@ -776,21 +769,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                   backgroundColor: const Color(0xFF2962FF),
                                   backgroundImage:
                                       _userProfileUrl != null &&
-                                          _userProfileUrl!.isNotEmpty
-                                      ? NetworkImage(_userProfileUrl!)
-                                      : null,
+                                              _userProfileUrl!.isNotEmpty
+                                          ? NetworkImage(_userProfileUrl!)
+                                          : null,
                                   child:
                                       _userProfileUrl == null ||
-                                          _userProfileUrl!.isEmpty
-                                      ? Text(
-                                          _getInitials(_userName),
-                                          style: const TextStyle(
-                                            fontSize: 32,
-                                            fontWeight: FontWeight.bold,
-                                            color: Colors.white,
-                                          ),
-                                        )
-                                      : null,
+                                              _userProfileUrl!.isEmpty
+                                          ? Text(
+                                              _getInitials(_userName),
+                                              style: const TextStyle(
+                                                fontSize: 32,
+                                                fontWeight: FontWeight.bold,
+                                                color: Colors.white,
+                                              ),
+                                            )
+                                          : null,
                                 ),
                                 Container(
                                   padding: const EdgeInsets.all(6),
@@ -1050,84 +1043,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       onChanged: (val) {
                         _handleChildProtectionToggle(val);
                       },
-                    ),
-                  ],
-                ),
-              ),
-
-              const SizedBox(height: 32),
-
-              const Text(
-                "Calibration",
-                style: TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.bold,
-                  color: Color(0xFF1E2339),
-                ),
-              ),
-              const SizedBox(height: 12),
-              Container(
-                padding: const EdgeInsets.all(20),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(20),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withOpacity(0.02),
-                      blurRadius: 10,
-                      offset: const Offset(0, 4),
-                    ),
-                  ],
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.all(10),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFF5F6FA),
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          child: const Icon(
-                            Icons.tune,
-                            color: Color(0xFF1E2339),
-                            size: 22,
-                          ),
-                        ),
-                        const SizedBox(width: 16),
-                        const Text(
-                          "Rain Sensitivity",
-                          style: TextStyle(
-                            fontSize: 15,
-                            fontWeight: FontWeight.bold,
-                            color: Color(0xFF1E2339),
-                          ),
-                        ),
-                        const Spacer(),
-                        Text(
-                          "${_rainSensitivity.round()}%",
-                          style: const TextStyle(
-                            fontWeight: FontWeight.bold,
-                            color: Color(0xFF2962FF),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 10),
-                    Slider(
-                      value: _rainSensitivity,
-                      min: 0,
-                      max: 100,
-                      activeColor: const Color(0xFF2962FF),
-                      inactiveColor: Colors.grey.shade200,
-                      onChanged: (val) =>
-                          _updateSetting('rain_sensitivity', val),
-                    ),
-                    const Text(
-                      "Adjust threshold for rain detection. Lower values mean higher sensitivity.",
-                      style: TextStyle(fontSize: 12, color: Colors.grey),
                     ),
                   ],
                 ),
