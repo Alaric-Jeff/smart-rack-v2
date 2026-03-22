@@ -1,8 +1,10 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'help_support.dart';
+import 'qr_scanner_screen.dart'; // Make sure this file exists from the previous step
 
 class DevicePairingScreen extends StatefulWidget {
   const DevicePairingScreen({super.key});
@@ -113,7 +115,34 @@ class _DevicePairingScreenState extends State<DevicePairingScreen> {
     }
   }
 
-  // Show pairing modal for NEW device
+  // Launch QR Scanner and process result
+  Future<void> _startQRScan() async {
+    final result = await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (context) => const QRScannerScreen()),
+    );
+
+    if (result != null && result is String) {
+      try {
+        // Parse the JSON from the QR code
+        final Map<String, dynamic> data = jsonDecode(result);
+        
+        final String? macId = data['macId'];
+        final String? code = data['pairingCode'];
+
+        if (macId != null && code != null) {
+          // Send the extracted data straight to your existing pairing function
+          await _attemptPairing(macId, code.toString());
+        } else {
+          _showSnackBar("Invalid QR code format. Missing MAC ID or Code.", Colors.red);
+        }
+      } catch (e) {
+        _showSnackBar("Unrecognized QR code format. Please input manually.", Colors.orange);
+      }
+    }
+  }
+
+  // Show pairing modal for NEW device (Manual Entry)
   void _showPairingModal() {
     // Reset errors
     _macIdError = null;
@@ -260,7 +289,7 @@ class _DevicePairingScreenState extends State<DevicePairingScreen> {
     );
   }
 
-  // ✅ NEW: Show device switcher modal (for already paired devices)
+  // Show device switcher modal (for already paired devices)
   void _showDeviceSwitcher() {
     showDialog(
       context: context,
@@ -373,7 +402,7 @@ class _DevicePairingScreenState extends State<DevicePairingScreen> {
     );
   }
 
-  // ✅ NEW: Switch to an already-paired device (no re-authentication needed)
+  // Switch to an already-paired device
   void _switchToDevice(String deviceDocId, String macId) async {
     try {
       final user = _auth.currentUser;
@@ -397,7 +426,7 @@ class _DevicePairingScreenState extends State<DevicePairingScreen> {
     }
   }
 
-  // Attempt device pairing (for NEW devices)
+  // Attempt device pairing 
   Future<void> _attemptPairing(String macId, String pairingCode) async {
     showDialog(
       context: context,
@@ -479,9 +508,8 @@ class _DevicePairingScreenState extends State<DevicePairingScreen> {
     }
   }
 
-  // Disconnect device (removes from user's paired devices)
+  // Disconnect device
   Future<void> _disconnectDevice() async {
-    // Show confirmation dialog
     final bool? confirm = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -663,7 +691,7 @@ class _DevicePairingScreenState extends State<DevicePairingScreen> {
     );
   }
 
-  // Unpaired view
+  // Unpaired view (Now with QR Scanner Button)
   Widget _buildUnpairedView() {
     return Column(
       children: [
@@ -673,7 +701,7 @@ class _DevicePairingScreenState extends State<DevicePairingScreen> {
             color: Colors.orange.shade50,
             shape: BoxShape.circle,
           ),
-          child: const Icon(Icons.devices_other, color: Colors.orange, size: 32),
+          child: const Icon(Icons.qr_code_scanner, color: Colors.orange, size: 32),
         ),
         const SizedBox(height: 16),
         const Text(
@@ -681,21 +709,43 @@ class _DevicePairingScreenState extends State<DevicePairingScreen> {
           style: TextStyle(fontSize: 14, color: Color(0xFF5A6175)),
         ),
         const SizedBox(height: 24),
-        ElevatedButton(
-          onPressed: _showPairingModal,
-          style: ElevatedButton.styleFrom(
-            backgroundColor: const Color(0xFF2962FF),
-            padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 12),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
+        
+        // Scan QR Button
+        SizedBox(
+          width: double.infinity,
+          child: ElevatedButton.icon(
+            onPressed: _startQRScan,
+            icon: const Icon(Icons.qr_code, color: Colors.white),
+            label: const Text(
+              "SCAN QR CODE",
+              style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.white),
+            ),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF2962FF),
+              padding: const EdgeInsets.symmetric(vertical: 14),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
             ),
           ),
-          child: const Text(
-            "PAIR DEVICE",
-            style: TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.bold,
-              color: Colors.white,
+        ),
+        const SizedBox(height: 12),
+        
+        // Manual Entry Option
+        SizedBox(
+          width: double.infinity,
+          child: OutlinedButton(
+            onPressed: _showPairingModal,
+            style: OutlinedButton.styleFrom(
+              padding: const EdgeInsets.symmetric(vertical: 14),
+              side: const BorderSide(color: Color(0xFF2962FF)),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            ),
+            child: const Text(
+              "ENTER MANUALLY",
+              style: TextStyle(
+                fontSize: 15,
+                fontWeight: FontWeight.bold,
+                color: Color(0xFF2962FF),
+              ),
             ),
           ),
         ),
@@ -741,7 +791,6 @@ class _DevicePairingScreenState extends State<DevicePairingScreen> {
           ),
         ),
         
-        // Show device count if multiple
         if (_pairedDevices.length > 1) ...[
           const SizedBox(height: 8),
           Text(
@@ -776,7 +825,7 @@ class _DevicePairingScreenState extends State<DevicePairingScreen> {
         ),
         const SizedBox(height: 12),
 
-        // ✅ FIXED: Switch Device Button now shows switcher modal
+        // Switch Device Button
         TextButton.icon(
           onPressed: _showDeviceSwitcher,
           icon: const Icon(
