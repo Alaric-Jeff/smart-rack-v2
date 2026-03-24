@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'dart:convert';
+import 'dart:math'; // Added for mock data generation
 import 'package:http/http.dart' as http;
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -256,9 +257,84 @@ class _DashboardContentState extends State<DashboardContent> {
     return initials.isEmpty ? "U" : initials;
   }
 
+  // ==========================================================
+  // MOCK DATA GENERATION
+  // Generates realistic 30-minute history anchored to the
+  // current live sensor readings shown on the dashboard.
+  // Only used for visualization — no real sensor logic changed.
+  // ==========================================================
+  void _generateMockHistory() {
+    final random = Random();
+    final now = DateTime.now();
+
+    // Anchor values matching what is displayed on the dashboard image:
+    //   Humidity     ~ 62.7 %
+    //   Temperature  ~ 27.0 °C
+    //   Rain AO      ~ 4095  (No Rain)
+    //   Rain Chance  ~  3 %
+    const double anchorHumidity     = 62.7;
+    const double anchorTemperature  = 27.0;
+    const double anchorRainAO       = 4095.0;
+    const double anchorRainChance   =  3.0;
+
+    // One data point every ~2 minutes over the last 30 minutes → 16 points
+    const int points        = 16;
+    const int intervalSecs  = 120; // 2 minutes
+
+    _humidityHistory.clear();
+    _tempHistory.clear();
+    _rainHistory.clear();
+    _rainConfidenceHistory.clear();
+
+    // We build the series so that the LAST point equals the anchor value,
+    // and each step back adds a small random walk to look natural.
+
+    double h  = anchorHumidity;
+    double t  = anchorTemperature;
+    double r  = anchorRainAO;
+    double rc = anchorRainChance;
+
+    // Collect points in reverse then flip
+    final List<SensorDataPoint> tmpHum  = [];
+    final List<SensorDataPoint> tmpTemp = [];
+    final List<SensorDataPoint> tmpRain = [];
+    final List<SensorDataPoint> tmpRc   = [];
+
+    for (int i = 0; i < points; i++) {
+      final timestamp = now.subtract(Duration(seconds: intervalSecs * i));
+
+      tmpHum.add(SensorDataPoint(value: h.clamp(45.0, 95.0),  timestamp: timestamp));
+      tmpTemp.add(SensorDataPoint(value: t.clamp(20.0, 35.0), timestamp: timestamp));
+      tmpRain.add(SensorDataPoint(value: r.clamp(3800.0, 4095.0), timestamp: timestamp));
+      tmpRc.add(SensorDataPoint(value: rc.clamp(0.0, 100.0),  timestamp: timestamp));
+
+      // Step backwards: small random perturbation per 2-minute interval
+      // Humidity drifts ±1.5 % per step
+      h  += (random.nextDouble() * 3.0 - 1.5);
+      // Temperature drifts ±0.3 °C per step
+      t  += (random.nextDouble() * 0.6 - 0.3);
+      // Rain AO stays high (dry) with tiny noise ±20
+      r  += (random.nextDouble() * 40.0 - 20.0);
+      // Rain chance drifts ±1 % per step, stays very low
+      rc += (random.nextDouble() * 2.0 - 1.0);
+    }
+
+    // Reverse so oldest point is first (chronological order)
+    _humidityHistory.addAll(tmpHum.reversed);
+    _tempHistory.addAll(tmpTemp.reversed);
+    _rainHistory.addAll(tmpRain.reversed);
+    _rainConfidenceHistory.addAll(tmpRc.reversed);
+  }
+
   void _startSensorUpdates() {
     if (_currentDeviceConnected == null || _currentDeviceConnected!.isEmpty) {
       debugPrint("No device connected, skipping sensor listener");
+      // Populate mock history so graphs are visible even without a real device
+      if (mounted) {
+        setState(() {
+          _generateMockHistory();
+        });
+      }
       return;
     }
 
@@ -405,6 +481,9 @@ class _DashboardContentState extends State<DashboardContent> {
             _isLoadingUser = false;
             _isProfileIncomplete = true; 
           });
+
+          // No Firestore doc — still generate mock history for graphs
+          _generateMockHistory();
         }
       }
     } catch (e) {
