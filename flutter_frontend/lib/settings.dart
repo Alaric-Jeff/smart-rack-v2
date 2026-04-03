@@ -80,6 +80,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   // --- FETCH USER DATA ---
+// --- FETCH USER DATA ---
   Future<void> _fetchUserData({bool showLoading = false}) async {
     try {
       final bool shouldShowLoading = showLoading || _userName == "Loading...";
@@ -113,6 +114,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
         String email = data['email'] ?? user.email ?? 'No email';
         String? imageUrl = data['image_url'];
         Timestamp? createdAt = data['createdAt'];
+
+        // FIX: Match home.dart exactly. Fetch 'image_url' (Cloudinary) instead of 'photoUrl' (SSO)
+        String? imageUrl = data['image_url'];
 
         bool is2FA = data['is2FAEnabled'] ?? false;
 
