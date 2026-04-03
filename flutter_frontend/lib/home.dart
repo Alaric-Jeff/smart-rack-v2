@@ -6,11 +6,11 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'dart:async';
-import 'controls.dart'; 
+import 'controls.dart';
 import 'notification.dart';
-import 'settings.dart'; 
+import 'settings.dart';
 import 'edit_profile.dart';
-import 'device_pairing.dart'; 
+import 'device_pairing.dart';
 
 // ============================================
 // TOP LEVEL CONFIGURATION
@@ -42,20 +42,21 @@ class _HomeScreenState extends State<HomeScreen> {
             .collection('users')
             .doc(user.uid)
             .get();
-        
+
         if (userDoc.exists) {
           final userData = userDoc.data() as Map<String, dynamic>;
           String? deviceId = userData['currentDeviceConnected'] as String?;
-          
+
           if (deviceId == null || deviceId.isEmpty) {
-            if (userData.containsKey('devices') && userData['devices'] is List) {
+            if (userData.containsKey('devices') &&
+                userData['devices'] is List) {
               List devices = userData['devices'] as List;
               if (devices.isNotEmpty) {
                 deviceId = devices[0].toString();
               }
             }
           }
-          
+
           if (mounted) {
             setState(() {
               _currentDeviceId = deviceId;
@@ -72,9 +73,16 @@ class _HomeScreenState extends State<HomeScreen> {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text("No Device Paired", 
-            style: TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
-        content: const Text("This feature requires a connected device. Please pair a Smart Rack in the Settings or Home screen."),
+        title: const Text(
+          "No Device Paired",
+          style: TextStyle(
+            fontWeight: FontWeight.bold,
+            color: Color(0xFF1E2339),
+          ),
+        ),
+        content: const Text(
+          "This feature requires a connected device. Please pair a Smart Rack in the Settings or Home screen.",
+        ),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         actions: [
           TextButton(
@@ -104,19 +112,20 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     final pages = _getPages();
-    
+
     return Scaffold(
       backgroundColor: const Color(0xFFF8F9FB),
-      body: pages[_selectedIndex > 2 ? _selectedIndex - 1 : _selectedIndex], 
-      
+      body: pages[_selectedIndex > 2 ? _selectedIndex - 1 : _selectedIndex],
+
       bottomNavigationBar: Container(
         decoration: BoxDecoration(
           color: Colors.white,
           boxShadow: [
             BoxShadow(
-                color: Colors.black.withOpacity(0.05),
-                blurRadius: 10,
-                offset: const Offset(0, -5))
+              color: Colors.black.withOpacity(0.05),
+              blurRadius: 10,
+              offset: const Offset(0, -5),
+            ),
           ],
         ),
         child: BottomNavigationBar(
@@ -126,51 +135,64 @@ class _HomeScreenState extends State<HomeScreen> {
           unselectedItemColor: Colors.grey,
           showUnselectedLabels: true,
           currentIndex: _selectedIndex,
-          
+
           onTap: (index) {
-            if (index == 1 && (_currentDeviceId == null || _currentDeviceId!.isEmpty)) {
+            if (index == 1 &&
+                (_currentDeviceId == null || _currentDeviceId!.isEmpty)) {
               _showNoDeviceDialog();
-              return; 
+              return;
             }
 
             if (index == 2) {
               Navigator.push(
-                context, 
-                MaterialPageRoute(builder: (context) => const DevicePairingScreen())
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const DevicePairingScreen(),
+                ),
               ).then((_) => _loadDeviceId());
             } else {
               setState(() => _selectedIndex = index);
             }
           },
-          
+
           items: [
-            const BottomNavigationBarItem(icon: Icon(Icons.home_filled), label: "HOME"),
-            const BottomNavigationBarItem(icon: Icon(Icons.tune), label: "CONTROLS"),
-            
+            const BottomNavigationBarItem(
+              icon: Icon(Icons.home_filled),
+              label: "HOME",
+            ),
+            const BottomNavigationBarItem(
+              icon: Icon(Icons.tune),
+              label: "CONTROLS",
+            ),
+
             BottomNavigationBarItem(
               icon: Container(
                 height: 45,
                 width: 45,
                 decoration: BoxDecoration(
-                  color: const Color(0xFF2962FF), 
+                  color: const Color(0xFF2962FF),
                   shape: BoxShape.circle,
                   boxShadow: [
                     BoxShadow(
                       color: const Color(0xFF2962FF).withOpacity(0.4),
                       blurRadius: 10,
                       offset: const Offset(0, 4),
-                    )
-                  ]
+                    ),
+                  ],
                 ),
                 child: const Icon(Icons.add, color: Colors.white, size: 30),
               ),
-              label: "", 
+              label: "",
             ),
 
             const BottomNavigationBarItem(
-                icon: Icon(Icons.notifications_outlined), label: "ALERTS"),
+              icon: Icon(Icons.notifications_outlined),
+              label: "ALERTS",
+            ),
             const BottomNavigationBarItem(
-                icon: Icon(Icons.settings_outlined), label: "SETTINGS"),
+              icon: Icon(Icons.settings_outlined),
+              label: "SETTINGS",
+            ),
           ],
         ),
       ),
@@ -183,11 +205,8 @@ class _HomeScreenState extends State<HomeScreen> {
 // ==========================================================
 class DashboardContent extends StatefulWidget {
   final Function(String?)? onDeviceIdUpdated;
-  
-  const DashboardContent({
-    super.key,
-    this.onDeviceIdUpdated,
-  });
+
+  const DashboardContent({super.key, this.onDeviceIdUpdated});
 
   @override
   State<DashboardContent> createState() => _DashboardContentState();
@@ -201,13 +220,13 @@ class _DashboardContentState extends State<DashboardContent> {
   String _userName = "Loading...";
   String _userEmail = "Loading...";
   String _userAddress = "";
-  String _userRegion = ""; 
+  String _userRegion = "";
   String _deviceId = "N/A";
   String _memberSince = "Loading...";
   String? _userProfileUrl;
   bool _isLoadingUser = true;
   String? _currentDeviceConnected;
-  
+
   bool _isProfileIncomplete = false;
 
   // Weather State Variables
@@ -216,12 +235,12 @@ class _DashboardContentState extends State<DashboardContent> {
   String _weatherCondition = "Loading...";
   String _weatherDesc = "Fetching local weather...";
   IconData _weatherIcon = Icons.cloud;
-  
+
   // Sensor data
   double _sensorHumidity = 0;
   double _sensorTemperature = 0;
   double _sensorRainIntensity = 4095;
-  
+
   double _rainConfidence = 0;
 
   // Time-series history
@@ -247,12 +266,14 @@ class _DashboardContentState extends State<DashboardContent> {
 
   String _getInitials(String name) {
     if (name.isEmpty || name == "Loading...") return "";
-    List<String> nameParts = name.trim().split(RegExp(r'\s+')); 
+    List<String> nameParts = name.trim().split(RegExp(r'\s+'));
     if (nameParts.isEmpty) return "U";
-    
+
     String first = nameParts[0].isNotEmpty ? nameParts[0][0] : "";
-    String last = nameParts.length > 1 && nameParts[1].isNotEmpty ? nameParts[1][0] : "";
-    
+    String last = nameParts.length > 1 && nameParts[1].isNotEmpty
+        ? nameParts[1][0]
+        : "";
+
     String initials = (first + last).toUpperCase();
     return initials.isEmpty ? "U" : initials;
   }
@@ -267,59 +288,58 @@ class _DashboardContentState extends State<DashboardContent> {
     final random = Random();
     final now = DateTime.now();
 
-    // Anchor values matching what is displayed on the dashboard image:
-    //   Humidity     ~ 62.7 %
-    //   Temperature  ~ 27.0 °C
-    //   Rain AO      ~ 4095  (No Rain)
-    //   Rain Chance  ~  3 %
-    const double anchorHumidity     = 62.7;
-    const double anchorTemperature  = 27.0;
-    const double anchorRainAO       = 4095.0;
-    const double anchorRainChance   =  3.0;
+    // Anchor to live readings shown on dashboard screenshot
+    const double anchorHumidity = 62.7;
+    const double anchorTemperature = 27.0;
+    const double anchorRainAO = 4095.0;
+    const double anchorRainChance = 3.0;
 
-    // One data point every ~2 minutes over the last 30 minutes → 16 points
-    const int points        = 16;
-    const int intervalSecs  = 120; // 2 minutes
+    const int points = 16; // one point every ~2 min over 30 min
+    const int intervalSecs = 120;
 
     _humidityHistory.clear();
     _tempHistory.clear();
     _rainHistory.clear();
     _rainConfidenceHistory.clear();
 
-    // We build the series so that the LAST point equals the anchor value,
-    // and each step back adds a small random walk to look natural.
-
-    double h  = anchorHumidity;
-    double t  = anchorTemperature;
-    double r  = anchorRainAO;
+    double h = anchorHumidity;
+    double t = anchorTemperature;
+    double r = anchorRainAO;
     double rc = anchorRainChance;
 
-    // Collect points in reverse then flip
-    final List<SensorDataPoint> tmpHum  = [];
+    final List<SensorDataPoint> tmpHum = [];
     final List<SensorDataPoint> tmpTemp = [];
     final List<SensorDataPoint> tmpRain = [];
-    final List<SensorDataPoint> tmpRc   = [];
+    final List<SensorDataPoint> tmpRc = [];
 
     for (int i = 0; i < points; i++) {
       final timestamp = now.subtract(Duration(seconds: intervalSecs * i));
 
-      tmpHum.add(SensorDataPoint(value: h.clamp(45.0, 95.0),  timestamp: timestamp));
-      tmpTemp.add(SensorDataPoint(value: t.clamp(20.0, 35.0), timestamp: timestamp));
-      tmpRain.add(SensorDataPoint(value: r.clamp(3800.0, 4095.0), timestamp: timestamp));
-      tmpRc.add(SensorDataPoint(value: rc.clamp(0.0, 100.0),  timestamp: timestamp));
+      tmpHum.add(
+        SensorDataPoint(value: h.clamp(45.0, 95.0), timestamp: timestamp),
+      );
+      tmpTemp.add(
+        SensorDataPoint(value: t.clamp(20.0, 35.0), timestamp: timestamp),
+      );
+      // Rain AO: keep "No Rain" range (3800–4095) but allow ±80 drift so the
+      // graph has a readable shape rather than a flat line.
+      tmpRain.add(
+        SensorDataPoint(value: r.clamp(3700.0, 4095.0), timestamp: timestamp),
+      );
+      tmpRc.add(
+        SensorDataPoint(value: rc.clamp(0.0, 100.0), timestamp: timestamp),
+      );
 
-      // Step backwards: small random perturbation per 2-minute interval
-      // Humidity drifts ±1.5 % per step
-      h  += (random.nextDouble() * 3.0 - 1.5);
-      // Temperature drifts ±0.3 °C per step
-      t  += (random.nextDouble() * 0.6 - 0.3);
-      // Rain AO stays high (dry) with tiny noise ±20
-      r  += (random.nextDouble() * 40.0 - 20.0);
-      // Rain chance drifts ±1 % per step, stays very low
-      rc += (random.nextDouble() * 2.0 - 1.0);
+      // Random-walk stepping backwards in time
+      h += (random.nextDouble() * 3.0 - 1.5); // ±1.5 % humidity per step
+      t += (random.nextDouble() * 0.6 - 0.3); // ±0.3 °C per step
+      r +=
+          (random.nextDouble() * 160.0 -
+          80.0); // ±80 AO per step (was ±20 — too flat)
+      rc += (random.nextDouble() * 2.0 - 1.0); // ±1 % rain-chance per step
     }
 
-    // Reverse so oldest point is first (chronological order)
+    // Reverse so oldest point is first (chronological order for the chart)
     _humidityHistory.addAll(tmpHum.reversed);
     _tempHistory.addAll(tmpTemp.reversed);
     _rainHistory.addAll(tmpRain.reversed);
@@ -327,14 +347,18 @@ class _DashboardContentState extends State<DashboardContent> {
   }
 
   void _startSensorUpdates() {
+    // ── Always seed graphs with realistic mock history ──────────────────────
+    // Real sensor events will append on top; mock data fills the chart
+    // immediately so the user never sees an empty graph on first load.
+    if (mounted) {
+      setState(() {
+        _generateMockHistory();
+      });
+    }
+    // ────────────────────────────────────────────────────────────────────────
+
     if (_currentDeviceConnected == null || _currentDeviceConnected!.isEmpty) {
       debugPrint("No device connected, skipping sensor listener");
-      // Populate mock history so graphs are visible even without a real device
-      if (mounted) {
-        setState(() {
-          _generateMockHistory();
-        });
-      }
       return;
     }
 
@@ -344,42 +368,42 @@ class _DashboardContentState extends State<DashboardContent> {
         .ref('devices/$_currentDeviceConnected/sensors')
         .onValue
         .listen(
-      (DatabaseEvent event) {
-        if (!event.snapshot.exists || !mounted) return;
+          (DatabaseEvent event) {
+            if (!event.snapshot.exists || !mounted) return;
 
-        final sensorData = event.snapshot.value as Map<dynamic, dynamic>?;
-        if (sensorData == null) return;
+            final sensorData = event.snapshot.value as Map<dynamic, dynamic>?;
+            if (sensorData == null) return;
 
-        double humidity = (sensorData['humidity'] ?? 0).toDouble();
-        double temperature = (sensorData['temperature'] ?? 0).toDouble();
-        double rainIntensity = (sensorData['rainAO'] ?? 0).toDouble();
+            double humidity = (sensorData['humidity'] ?? 0).toDouble();
+            double temperature = (sensorData['temperature'] ?? 0).toDouble();
+            double rainIntensity = (sensorData['rainAO'] ?? 0).toDouble();
 
-        double rainConfidence = _calculateRainfallConfidence(
-          humidity: humidity,
-          temperature: temperature,
-          rainIntensity: rainIntensity,
+            double rainConfidence = _calculateRainfallConfidence(
+              humidity: humidity,
+              temperature: temperature,
+              rainIntensity: rainIntensity,
+            );
+
+            DateTime now = DateTime.now();
+
+            setState(() {
+              _sensorHumidity = humidity;
+              _sensorTemperature = temperature;
+              _sensorRainIntensity = rainIntensity;
+              _rainConfidence = rainConfidence;
+
+              _addToHistory(_humidityHistory, humidity, now);
+              _addToHistory(_tempHistory, temperature, now);
+              _addToHistory(_rainHistory, rainIntensity, now);
+              _addToHistory(_rainConfidenceHistory, rainConfidence, now);
+
+              _cleanupOldHistory();
+            });
+          },
+          onError: (error) {
+            debugPrint('Sensor listener error: $error');
+          },
         );
-
-        DateTime now = DateTime.now();
-
-        setState(() {
-          _sensorHumidity = humidity;
-          _sensorTemperature = temperature;
-          _sensorRainIntensity = rainIntensity;
-          _rainConfidence = rainConfidence;
-
-          _addToHistory(_humidityHistory, humidity, now);
-          _addToHistory(_tempHistory, temperature, now);
-          _addToHistory(_rainHistory, rainIntensity, now);
-          _addToHistory(_rainConfidenceHistory, rainConfidence, now);
-
-          _cleanupOldHistory();
-        });
-      },
-      onError: (error) {
-        debugPrint('Sensor listener error: $error');
-      },
-    );
   }
 
   Future<void> _fetchUserData() async {
@@ -409,8 +433,9 @@ class _DashboardContentState extends State<DashboardContent> {
         Map<String, dynamic> userData = userDoc.data() as Map<String, dynamic>;
 
         _currentDeviceConnected = userData['currentDeviceConnected'] as String?;
-        
-        if (_currentDeviceConnected == null || _currentDeviceConnected!.isEmpty) {
+
+        if (_currentDeviceConnected == null ||
+            _currentDeviceConnected!.isEmpty) {
           if (userData.containsKey('devices') && userData['devices'] is List) {
             List devices = userData['devices'] as List;
             if (devices.isNotEmpty) {
@@ -426,17 +451,19 @@ class _DashboardContentState extends State<DashboardContent> {
         String? lastName = userData['lastName'];
         String? contactNumber = userData['contactNumber'];
         String address = userData['address'] ?? "";
-        String region = userData['region'] ?? ""; 
+        String region = userData['region'] ?? "";
         String email = userData['email'] ?? currentUser.email ?? 'No email';
         String? imageUrl = userData['image_url'];
         Timestamp? createdAt = userData['createdAt'];
 
-        bool isNameMissing = (firstName == null || firstName.isEmpty) && (lastName == null || lastName.isEmpty);
+        bool isNameMissing =
+            (firstName == null || firstName.isEmpty) &&
+            (lastName == null || lastName.isEmpty);
         bool isPhoneMissing = contactNumber == null || contactNumber.isEmpty;
         bool profileIncomplete = isNameMissing || isPhoneMissing;
 
         String finalDisplayName;
-        if (displayName != null && displayName.isNotEmpty) { 
+        if (displayName != null && displayName.isNotEmpty) {
           finalDisplayName = displayName;
         } else if (firstName != null && lastName != null) {
           finalDisplayName = '$firstName $lastName';
@@ -462,9 +489,11 @@ class _DashboardContentState extends State<DashboardContent> {
             _userRegion = region;
             _deviceId = deviceId;
             _memberSince = memberSince;
-            _userProfileUrl = (imageUrl != null && imageUrl.isNotEmpty) ? imageUrl : null;
+            _userProfileUrl = (imageUrl != null && imageUrl.isNotEmpty)
+                ? imageUrl
+                : null;
             _isLoadingUser = false;
-            _isProfileIncomplete = profileIncomplete; 
+            _isProfileIncomplete = profileIncomplete;
           });
 
           _startSensorUpdates();
@@ -479,7 +508,7 @@ class _DashboardContentState extends State<DashboardContent> {
             _memberSince = "Recently";
             _userProfileUrl = null;
             _isLoadingUser = false;
-            _isProfileIncomplete = true; 
+            _isProfileIncomplete = true;
           });
 
           // No Firestore doc — still generate mock history for graphs
@@ -501,8 +530,18 @@ class _DashboardContentState extends State<DashboardContent> {
 
   String _getMonthName(int month) {
     const months = [
-      'January', 'February', 'March', 'April', 'May', 'June',
-      'July', 'August', 'September', 'October', 'November', 'December'
+      'January',
+      'February',
+      'March',
+      'April',
+      'May',
+      'June',
+      'July',
+      'August',
+      'September',
+      'October',
+      'November',
+      'December',
     ];
     return months[month - 1];
   }
@@ -513,34 +552,41 @@ class _DashboardContentState extends State<DashboardContent> {
     required double rainIntensity,
   }) {
     // Redistributed weights to account for removed light sensor
-    const double humidityWeight = 0.45;      
-    const double temperatureWeight = 0.45;   
-    const double rainIntensityWeight = 0.10; 
+    const double humidityWeight = 0.45;
+    const double temperatureWeight = 0.45;
+    const double rainIntensityWeight = 0.10;
 
     double humidityScore = ((humidity - 60) / 40).clamp(0, 1) * 100;
     double tempScore = (1 - ((temperature - 15) / 10).clamp(0, 1)) * 100;
     double rainScore = ((4095 - rainIntensity) / 4095) * 100;
 
-    double confidence = (
-      (humidityScore * humidityWeight) +
-      (tempScore * temperatureWeight) +
-      (rainScore * rainIntensityWeight)
-    );
+    double confidence =
+        ((humidityScore * humidityWeight) +
+        (tempScore * temperatureWeight) +
+        (rainScore * rainIntensityWeight));
 
     return confidence.clamp(0, 100);
   }
 
-  void _addToHistory(List<SensorDataPoint> history, double value, DateTime timestamp) {
+  void _addToHistory(
+    List<SensorDataPoint> history,
+    double value,
+    DateTime timestamp,
+  ) {
     history.add(SensorDataPoint(value: value, timestamp: timestamp));
   }
 
   void _cleanupOldHistory() {
-    DateTime cutoff = DateTime.now().subtract(const Duration(minutes: HISTORY_DURATION_MINUTES));
-    
+    DateTime cutoff = DateTime.now().subtract(
+      const Duration(minutes: HISTORY_DURATION_MINUTES),
+    );
+
     _humidityHistory.removeWhere((point) => point.timestamp.isBefore(cutoff));
     _tempHistory.removeWhere((point) => point.timestamp.isBefore(cutoff));
     _rainHistory.removeWhere((point) => point.timestamp.isBefore(cutoff));
-    _rainConfidenceHistory.removeWhere((point) => point.timestamp.isBefore(cutoff));
+    _rainConfidenceHistory.removeWhere(
+      (point) => point.timestamp.isBefore(cutoff),
+    );
   }
 
   Future<void> _fetchWeather() async {
@@ -562,14 +608,16 @@ class _DashboardContentState extends State<DashboardContent> {
     try {
       String queryName = searchLocation.split(',').first.trim();
 
-      final geoUrl = 'https://geocoding-api.open-meteo.com/v1/search?name=${Uri.encodeComponent(queryName)}&count=1';
+      final geoUrl =
+          'https://geocoding-api.open-meteo.com/v1/search?name=${Uri.encodeComponent(queryName)}&count=1';
       final geoResponse = await http.get(Uri.parse(geoUrl));
 
       if (geoResponse.statusCode != 200) throw Exception('Geocoding failed');
 
       final geoData = json.decode(geoResponse.body);
-      
-      if (!geoData.containsKey('results') || (geoData['results'] as List).isEmpty) {
+
+      if (!geoData.containsKey('results') ||
+          (geoData['results'] as List).isEmpty) {
         if (mounted) {
           setState(() {
             _currentCity = "Unknown Region";
@@ -586,7 +634,8 @@ class _DashboardContentState extends State<DashboardContent> {
       final double long = geoData['results'][0]['longitude'];
       final String matchedCity = geoData['results'][0]['name'];
 
-      final String weatherUrl = 'https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$long&current_weather=true';
+      final String weatherUrl =
+          'https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$long&current_weather=true';
       final weatherResponse = await http.get(Uri.parse(weatherUrl));
 
       if (weatherResponse.statusCode == 200) {
@@ -598,7 +647,7 @@ class _DashboardContentState extends State<DashboardContent> {
         if (mounted) {
           setState(() {
             _currentCity = matchedCity;
-            _weatherTemp = "${(currentWeather['temperature'] as num).round()}°"; 
+            _weatherTemp = "${(currentWeather['temperature'] as num).round()}°";
             _weatherCondition = weatherInfo['condition'];
             _weatherDesc = weatherInfo['description'];
             _weatherIcon = weatherInfo['icon'];
@@ -611,7 +660,7 @@ class _DashboardContentState extends State<DashboardContent> {
         throw Exception('Weather fetch failed');
       }
     } catch (e) {
-      debugPrint("Weather Error: $e"); 
+      debugPrint("Weather Error: $e");
       if (mounted) {
         setState(() {
           _weatherTemp = "--";
@@ -624,11 +673,35 @@ class _DashboardContentState extends State<DashboardContent> {
   }
 
   Map<String, dynamic> _getWeatherInfoFromCode(int code) {
-    if (code == 0) return {"condition": "Clear", "description": "Sunny skies", "icon": Icons.wb_sunny};
-    if (code >= 1 && code <= 3) return {"condition": "Cloudy", "description": "Partly cloudy", "icon": Icons.cloud};
-    if (code >= 51 && code <= 67) return {"condition": "Rainy", "description": "Rain detected", "icon": Icons.water_drop};
-    if (code >= 95) return {"condition": "Storm", "description": "Thunderstorms", "icon": Icons.thunderstorm};
-    return {"condition": "Rainy", "description": "Showers", "icon": Icons.grain};
+    if (code == 0)
+      return {
+        "condition": "Clear",
+        "description": "Sunny skies",
+        "icon": Icons.wb_sunny,
+      };
+    if (code >= 1 && code <= 3)
+      return {
+        "condition": "Cloudy",
+        "description": "Partly cloudy",
+        "icon": Icons.cloud,
+      };
+    if (code >= 51 && code <= 67)
+      return {
+        "condition": "Rainy",
+        "description": "Rain detected",
+        "icon": Icons.water_drop,
+      };
+    if (code >= 95)
+      return {
+        "condition": "Storm",
+        "description": "Thunderstorms",
+        "icon": Icons.thunderstorm,
+      };
+    return {
+      "condition": "Rainy",
+      "description": "Showers",
+      "icon": Icons.grain,
+    };
   }
 
   void _showAccountModal() {
@@ -642,7 +715,9 @@ class _DashboardContentState extends State<DashboardContent> {
           decoration: const BoxDecoration(
             color: Colors.white,
             borderRadius: BorderRadius.only(
-                topLeft: Radius.circular(24), topRight: Radius.circular(24)),
+              topLeft: Radius.circular(24),
+              topRight: Radius.circular(24),
+            ),
           ),
           child: Column(
             children: [
@@ -651,12 +726,18 @@ class _DashboardContentState extends State<DashboardContent> {
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    const Text("Account",
-                        style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
+                    const Text(
+                      "Account",
+                      style: TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF1E2339),
+                      ),
+                    ),
                     IconButton(
                       icon: const Icon(Icons.close, color: Colors.grey),
                       onPressed: () => Navigator.pop(context),
-                    )
+                    ),
                   ],
                 ),
               ),
@@ -674,16 +755,16 @@ class _DashboardContentState extends State<DashboardContent> {
                                 CircleAvatar(
                                   radius: 50,
                                   backgroundColor: const Color(0xFF2962FF),
-                                  backgroundImage: _userProfileUrl != null 
-                                      ? NetworkImage(_userProfileUrl!) 
+                                  backgroundImage: _userProfileUrl != null
+                                      ? NetworkImage(_userProfileUrl!)
                                       : null,
-                                  child: _userProfileUrl == null 
+                                  child: _userProfileUrl == null
                                       ? Text(
                                           _getInitials(_userName),
                                           style: const TextStyle(
-                                            fontSize: 32, 
-                                            fontWeight: FontWeight.bold, 
-                                            color: Colors.white
+                                            fontSize: 32,
+                                            fontWeight: FontWeight.bold,
+                                            color: Colors.white,
                                           ),
                                         )
                                       : null,
@@ -693,29 +774,55 @@ class _DashboardContentState extends State<DashboardContent> {
                                   decoration: const BoxDecoration(
                                     color: Colors.white,
                                     shape: BoxShape.circle,
-                                    boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 4)],
+                                    boxShadow: [
+                                      BoxShadow(
+                                        color: Colors.black12,
+                                        blurRadius: 4,
+                                      ),
+                                    ],
                                   ),
-                                  child: const Icon(Icons.edit, size: 16, color: Colors.grey),
+                                  child: const Icon(
+                                    Icons.edit,
+                                    size: 16,
+                                    color: Colors.grey,
+                                  ),
                                 ),
                               ],
                             ),
                             const SizedBox(height: 16),
-                            
-                            Text(_userName, 
-                                style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
+
+                            Text(
+                              _userName,
+                              style: const TextStyle(
+                                fontSize: 20,
+                                fontWeight: FontWeight.bold,
+                                color: Color(0xFF1E2339),
+                              ),
+                            ),
                             const SizedBox(height: 4),
-                            Text(_userEmail, 
-                                style: TextStyle(fontSize: 14, color: Colors.grey[600])),
-                            
+                            Text(
+                              _userEmail,
+                              style: TextStyle(
+                                fontSize: 14,
+                                color: Colors.grey[600],
+                              ),
+                            ),
+
                             const SizedBox(height: 32),
 
                             Align(
                               alignment: Alignment.centerLeft,
-                              child: Text("Account Information", 
-                                style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.grey[800])),
+                              child: Text(
+                                "Account Information",
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.grey[800],
+                                ),
+                              ),
                             ),
                             const SizedBox(height: 12),
-                            
+
                             Container(
                               padding: const EdgeInsets.all(20),
                               decoration: BoxDecoration(
@@ -724,11 +831,23 @@ class _DashboardContentState extends State<DashboardContent> {
                               ),
                               child: Column(
                                 children: [
-                                  _buildInfoRow(Icons.email_outlined, "EMAIL", _userEmail),
+                                  _buildInfoRow(
+                                    Icons.email_outlined,
+                                    "EMAIL",
+                                    _userEmail,
+                                  ),
                                   const Divider(height: 30),
-                                  _buildInfoRow(Icons.phone_android, "USER ID", _deviceId),
+                                  _buildInfoRow(
+                                    Icons.phone_android,
+                                    "USER ID",
+                                    _deviceId,
+                                  ),
                                   const Divider(height: 30),
-                                  _buildInfoRow(Icons.calendar_today_outlined, "MEMBER SINCE", _memberSince),
+                                  _buildInfoRow(
+                                    Icons.calendar_today_outlined,
+                                    "MEMBER SINCE",
+                                    _memberSince,
+                                  ),
                                 ],
                               ),
                             ),
@@ -739,23 +858,34 @@ class _DashboardContentState extends State<DashboardContent> {
                               width: double.infinity,
                               height: 50,
                               child: ElevatedButton(
-                                onPressed: () { 
-                                  Navigator.pop(context); 
+                                onPressed: () {
+                                  Navigator.pop(context);
                                   Navigator.push(
-                                    context, 
-                                    MaterialPageRoute(builder: (context) => const EditProfileScreen())
-                                  ).then((_) => _fetchUserData()); 
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (context) =>
+                                          const EditProfileScreen(),
+                                    ),
+                                  ).then((_) => _fetchUserData());
                                 },
                                 style: ElevatedButton.styleFrom(
                                   backgroundColor: const Color(0xFF2962FF),
-                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
                                 ),
-                                child: const Text("EDIT PROFILE", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                                child: const Text(
+                                  "EDIT PROFILE",
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
                               ),
                             ),
-                            
+
                             const SizedBox(height: 12),
-                            
+
                             SizedBox(
                               width: double.infinity,
                               height: 50,
@@ -765,12 +895,24 @@ class _DashboardContentState extends State<DashboardContent> {
                                   if (mounted) {
                                     Navigator.pop(context);
                                   }
-                                }, 
-                                icon: const Icon(Icons.logout, size: 20, color: Colors.black87),
-                                label: const Text("SIGN OUT", style: TextStyle(color: Colors.black87, fontWeight: FontWeight.bold)),
+                                },
+                                icon: const Icon(
+                                  Icons.logout,
+                                  size: 20,
+                                  color: Colors.black87,
+                                ),
+                                label: const Text(
+                                  "SIGN OUT",
+                                  style: TextStyle(
+                                    color: Colors.black87,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
                                 style: OutlinedButton.styleFrom(
                                   side: BorderSide(color: Colors.grey.shade300),
-                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
                                   backgroundColor: const Color(0xFFF5F6FA),
                                 ),
                               ),
@@ -791,7 +933,10 @@ class _DashboardContentState extends State<DashboardContent> {
       children: [
         Container(
           padding: const EdgeInsets.all(10),
-          decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12)),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+          ),
           child: Icon(icon, color: Colors.grey[700], size: 20),
         ),
         const SizedBox(width: 16),
@@ -799,21 +944,37 @@ class _DashboardContentState extends State<DashboardContent> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(label, style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.grey)),
+              Text(
+                label,
+                style: const TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.grey,
+                ),
+              ),
               const SizedBox(height: 2),
               Text(
-                value, 
-                style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Color(0xFF1E2339)),
+                value,
+                style: const TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: Color(0xFF1E2339),
+                ),
                 overflow: TextOverflow.ellipsis,
               ),
             ],
           ),
-        )
+        ),
       ],
     );
   }
 
-  void _showDetailModal(String title, String value, List<SensorDataPoint> historyData, String statusMsg) {
+  void _showDetailModal(
+    String title,
+    String value,
+    List<SensorDataPoint> historyData,
+    String statusMsg,
+  ) {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -823,7 +984,10 @@ class _DashboardContentState extends State<DashboardContent> {
           height: MediaQuery.of(context).size.height * 0.55,
           decoration: const BoxDecoration(
             color: Colors.white,
-            borderRadius: BorderRadius.only(topLeft: Radius.circular(24), topRight: Radius.circular(24)),
+            borderRadius: BorderRadius.only(
+              topLeft: Radius.circular(24),
+              topRight: Radius.circular(24),
+            ),
           ),
           child: Column(
             children: [
@@ -832,11 +996,18 @@ class _DashboardContentState extends State<DashboardContent> {
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Text(title, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
+                    Text(
+                      title,
+                      style: const TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF1E2339),
+                      ),
+                    ),
                     IconButton(
                       icon: const Icon(Icons.close, color: Colors.grey),
                       onPressed: () => Navigator.pop(context),
-                    )
+                    ),
                   ],
                 ),
               ),
@@ -849,38 +1020,88 @@ class _DashboardContentState extends State<DashboardContent> {
                     children: [
                       Container(
                         padding: const EdgeInsets.all(20),
-                        decoration: BoxDecoration(border: Border.all(color: Colors.grey.shade200), borderRadius: BorderRadius.circular(20)),
+                        decoration: BoxDecoration(
+                          border: Border.all(color: Colors.grey.shade200),
+                          borderRadius: BorderRadius.circular(20),
+                        ),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            const Text("Recent History (Last 30 min)", style: TextStyle(color: Colors.grey, fontSize: 14)),
+                            const Text(
+                              "Recent History (Last 30 min)",
+                              style: TextStyle(
+                                color: Colors.grey,
+                                fontSize: 14,
+                              ),
+                            ),
                             const SizedBox(height: 20),
-                            
-                            title == "Weather" 
-                            ? const SizedBox(
-                                height: 100, 
-                                width: double.infinity, 
-                                child: Center(
-                                  child: Text(
-                                    "Forecast data provided by external weather service", 
-                                    style: TextStyle(color: Colors.grey, fontStyle: FontStyle.italic, fontWeight: FontWeight.w500)
+
+                            title == "Weather"
+                                ? const SizedBox(
+                                    height: 100,
+                                    width: double.infinity,
+                                    child: Center(
+                                      child: Text(
+                                        "Forecast data provided by external weather service",
+                                        style: TextStyle(
+                                          color: Colors.grey,
+                                          fontStyle: FontStyle.italic,
+                                          fontWeight: FontWeight.w500,
+                                        ),
+                                      ),
+                                    ),
                                   )
-                                )
-                              )
-                            : historyData.isEmpty
-                                ? SizedBox(height: 100, width: double.infinity, child: Center(child: Text("Waiting for sensor data...", style: TextStyle(color: Colors.grey.shade400, fontStyle: FontStyle.italic))))
-                                : SizedBox(height: 150, width: double.infinity, child: CustomPaint(painter: TimeSeriesChartPainter(data: historyData, color: const Color(0xFF2962FF)))),
+                                : historyData.isEmpty
+                                ? SizedBox(
+                                    height: 100,
+                                    width: double.infinity,
+                                    child: Center(
+                                      child: Text(
+                                        "Waiting for sensor data...",
+                                        style: TextStyle(
+                                          color: Colors.grey.shade400,
+                                          fontStyle: FontStyle.italic,
+                                        ),
+                                      ),
+                                    ),
+                                  )
+                                : SizedBox(
+                                    height: 150,
+                                    width: double.infinity,
+                                    child: CustomPaint(
+                                      painter: TimeSeriesChartPainter(
+                                        data: historyData,
+                                        color: const Color(0xFF2962FF),
+                                      ),
+                                    ),
+                                  ),
                           ],
                         ),
                       ),
                       const SizedBox(height: 24),
-                      const Text("Status", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
+                      const Text(
+                        "Status",
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                          color: Color(0xFF1E2339),
+                        ),
+                      ),
                       const SizedBox(height: 8),
                       Text(
-                          title == "Weather" 
+                        title == "Weather"
                             ? "Weather conditions are updated periodically based on your region. This data is independent of your local sensors."
-                            : (value == "0.0" || value == "0" || _currentDeviceConnected == null ? "Connect your Smart Rack sensors to see real-time status." : statusMsg),
-                          style: const TextStyle(fontSize: 14, color: Color(0xFF5A6175), height: 1.5)),
+                            : (value == "0.0" ||
+                                      value == "0" ||
+                                      _currentDeviceConnected == null
+                                  ? "Connect your Smart Rack sensors to see real-time status."
+                                  : statusMsg),
+                        style: const TextStyle(
+                          fontSize: 14,
+                          color: Color(0xFF5A6175),
+                          height: 1.5,
+                        ),
+                      ),
                     ],
                   ),
                 ),
@@ -897,7 +1118,8 @@ class _DashboardContentState extends State<DashboardContent> {
     final size = MediaQuery.of(context).size;
     final double padding = size.width * 0.05;
 
-    bool isDeviceConnected = _currentDeviceConnected != null && _currentDeviceConnected!.isNotEmpty;
+    bool isDeviceConnected =
+        _currentDeviceConnected != null && _currentDeviceConnected!.isNotEmpty;
 
     String getRainStatus() {
       if (_sensorRainIntensity > 3500) return "No Rain";
@@ -920,22 +1142,41 @@ class _DashboardContentState extends State<DashboardContent> {
                 const Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text("My Laundry", style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
+                    Text(
+                      "My Laundry",
+                      style: TextStyle(
+                        fontSize: 24,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF1E2339),
+                      ),
+                    ),
                     SizedBox(height: 4),
-                    Text("System Dashboard", style: TextStyle(fontSize: 14, color: Color(0xFF5A6175), fontWeight: FontWeight.w500)),
+                    Text(
+                      "System Dashboard",
+                      style: TextStyle(
+                        fontSize: 14,
+                        color: Color(0xFF5A6175),
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
                   ],
                 ),
                 GestureDetector(
-                  onTap: _showAccountModal, 
+                  onTap: _showAccountModal,
                   child: CircleAvatar(
                     radius: 24,
                     backgroundColor: const Color(0xFF2962FF),
-                    backgroundImage: _userProfileUrl != null ? NetworkImage(_userProfileUrl!) : null,
-                    child: _userProfileUrl == null 
+                    backgroundImage: _userProfileUrl != null
+                        ? NetworkImage(_userProfileUrl!)
+                        : null,
+                    child: _userProfileUrl == null
                         ? Text(
-                            _getInitials(_userName), 
-                            style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white)
-                          ) 
+                            _getInitials(_userName),
+                            style: const TextStyle(
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white,
+                            ),
+                          )
                         : null,
                   ),
                 ),
@@ -948,12 +1189,17 @@ class _DashboardContentState extends State<DashboardContent> {
                 onTap: () {
                   Navigator.push(
                     context,
-                    MaterialPageRoute(builder: (context) => const EditProfileScreen()),
+                    MaterialPageRoute(
+                      builder: (context) => const EditProfileScreen(),
+                    ),
                   ).then((_) => _fetchUserData());
                 },
                 child: Container(
                   margin: const EdgeInsets.only(bottom: 16),
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 12,
+                  ),
                   decoration: BoxDecoration(
                     color: Colors.orange.shade50,
                     borderRadius: BorderRadius.circular(12),
@@ -967,12 +1213,28 @@ class _DashboardContentState extends State<DashboardContent> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text("Complete your profile", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.orange.shade900)),
-                            Text("Add your name and contact info.", style: TextStyle(fontSize: 12, color: Colors.orange.shade800)),
+                            Text(
+                              "Complete your profile",
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: Colors.orange.shade900,
+                              ),
+                            ),
+                            Text(
+                              "Add your name and contact info.",
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Colors.orange.shade800,
+                              ),
+                            ),
                           ],
                         ),
                       ),
-                      Icon(Icons.arrow_forward_ios, size: 16, color: Colors.orange.shade800),
+                      Icon(
+                        Icons.arrow_forward_ios,
+                        size: 16,
+                        color: Colors.orange.shade800,
+                      ),
                     ],
                   ),
                 ),
@@ -983,13 +1245,18 @@ class _DashboardContentState extends State<DashboardContent> {
               GestureDetector(
                 onTap: () {
                   Navigator.push(
-                    context, 
-                    MaterialPageRoute(builder: (context) => const DevicePairingScreen())
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => const DevicePairingScreen(),
+                    ),
                   ).then((_) => _fetchUserData());
                 },
                 child: Container(
                   margin: const EdgeInsets.only(bottom: 24),
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 12,
+                  ),
                   decoration: BoxDecoration(
                     color: Colors.red.shade50,
                     borderRadius: BorderRadius.circular(12),
@@ -1003,28 +1270,59 @@ class _DashboardContentState extends State<DashboardContent> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text("No Device Connected", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.red.shade900)),
-                            Text("Tap here to pair your Smart Rack.", style: TextStyle(fontSize: 12, color: Colors.red.shade800)),
+                            Text(
+                              "No Device Connected",
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: Colors.red.shade900,
+                              ),
+                            ),
+                            Text(
+                              "Tap here to pair your Smart Rack.",
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Colors.red.shade800,
+                              ),
+                            ),
                           ],
                         ),
                       ),
-                      Icon(Icons.arrow_forward_ios, size: 16, color: Colors.red.shade800),
+                      Icon(
+                        Icons.arrow_forward_ios,
+                        size: 16,
+                        color: Colors.red.shade800,
+                      ),
                     ],
                   ),
                 ),
               ),
-            ] else 
+            ] else
               const SizedBox(height: 24),
 
             GestureDetector(
-              onTap: () => _showDetailModal("Weather", _weatherTemp, [], "Current weather is optimal."),
+              onTap: () => _showDetailModal(
+                "Weather",
+                _weatherTemp,
+                [],
+                "Current weather is optimal.",
+              ),
               child: Container(
                 width: double.infinity,
                 padding: const EdgeInsets.all(24),
                 decoration: BoxDecoration(
-                  gradient: const LinearGradient(colors: [Color(0xFF2962FF), Color(0xFF448AFF)], begin: Alignment.topLeft, end: Alignment.bottomRight),
+                  gradient: const LinearGradient(
+                    colors: [Color(0xFF2962FF), Color(0xFF448AFF)],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
                   borderRadius: BorderRadius.circular(24),
-                  boxShadow: [BoxShadow(color: Colors.blue.withOpacity(0.3), blurRadius: 20, offset: const Offset(0, 10))],
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.blue.withOpacity(0.3),
+                      blurRadius: 20,
+                      offset: const Offset(0, 10),
+                    ),
+                  ],
                 ),
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -1034,16 +1332,60 @@ class _DashboardContentState extends State<DashboardContent> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                            decoration: BoxDecoration(color: Colors.white.withOpacity(0.2), borderRadius: BorderRadius.circular(20)),
-                            child: Row(mainAxisSize: MainAxisSize.min, children: [const Icon(Icons.location_on, color: Colors.white, size: 12), const SizedBox(width: 4), Text(_currentCity, style: const TextStyle(color: Colors.white, fontSize: 12))]),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 4,
+                            ),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withOpacity(0.2),
+                              borderRadius: BorderRadius.circular(20),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Icon(
+                                  Icons.location_on,
+                                  color: Colors.white,
+                                  size: 12,
+                                ),
+                                const SizedBox(width: 4),
+                                Text(
+                                  _currentCity,
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                              ],
+                            ),
                           ),
                           const SizedBox(height: 12),
-                          Text(_weatherCondition, style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold)),
+                          Text(
+                            _weatherCondition,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 22,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
                           const SizedBox(height: 6),
-                          Text(_weatherDesc, style: TextStyle(color: Colors.white.withOpacity(0.9), fontSize: 13, height: 1.4)),
+                          Text(
+                            _weatherDesc,
+                            style: TextStyle(
+                              color: Colors.white.withOpacity(0.9),
+                              fontSize: 13,
+                              height: 1.4,
+                            ),
+                          ),
                           const SizedBox(height: 10),
-                          Text(_weatherTemp, style: const TextStyle(color: Colors.white, fontSize: 32, fontWeight: FontWeight.bold)),
+                          Text(
+                            _weatherTemp,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 32,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
                         ],
                       ),
                     ),
@@ -1068,35 +1410,55 @@ class _DashboardContentState extends State<DashboardContent> {
                   childAspectRatio: 0.85,
                   children: [
                     _buildSensorCard(
-                      title: "Humidity", 
-                      value: "${_sensorHumidity.toStringAsFixed(1)}%", 
-                      icon: Icons.water_drop_outlined, 
-                      color: Colors.green, 
-                      bgColor: const Color(0xFFE8F5E9), 
-                      onTap: () => _showDetailModal("Humidity", "${_sensorHumidity.toStringAsFixed(1)}%", _humidityHistory, "Humidity is optimal for drying.")
+                      title: "Humidity",
+                      value: "${_sensorHumidity.toStringAsFixed(1)}%",
+                      icon: Icons.water_drop_outlined,
+                      color: Colors.green,
+                      bgColor: const Color(0xFFE8F5E9),
+                      onTap: () => _showDetailModal(
+                        "Humidity",
+                        "${_sensorHumidity.toStringAsFixed(1)}%",
+                        _humidityHistory,
+                        "Humidity is optimal for drying.",
+                      ),
                     ),
                     _buildSensorCard(
-                      title: "Temperature", 
-                      value: "${_sensorTemperature.toStringAsFixed(1)}°C", 
-                      icon: Icons.thermostat, 
-                      color: Colors.blue, 
-                      bgColor: const Color(0xFFE3F2FD), 
-                      onTap: () => _showDetailModal("Temperature", "${_sensorTemperature.toStringAsFixed(1)}°C", _tempHistory, "Temperature is good for drying.")
+                      title: "Temperature",
+                      value: "${_sensorTemperature.toStringAsFixed(1)}°C",
+                      icon: Icons.thermostat,
+                      color: Colors.blue,
+                      bgColor: const Color(0xFFE3F2FD),
+                      onTap: () => _showDetailModal(
+                        "Temperature",
+                        "${_sensorTemperature.toStringAsFixed(1)}°C",
+                        _tempHistory,
+                        "Temperature is good for drying.",
+                      ),
                     ),
                     _buildSensorCard(
-                      title: "Rain Sensor", 
-                      value: getRainStatus(), 
-                      subtitle: isRaining ? "Alert" : null, 
-                      icon: Icons.cloud_outlined, 
-                      color: isRaining ? Colors.orange : Colors.green, 
-                      bgColor: const Color(0xFFE8F5E9), 
-                      onTap: () => _showDetailModal("Rain Sensor", getRainStatus(), _rainHistory, "Current rain intensity: ${_sensorRainIntensity.toStringAsFixed(0)}")
+                      title: "Rain Sensor",
+                      value: getRainStatus(),
+                      subtitle: isRaining ? "Alert" : null,
+                      icon: Icons.cloud_outlined,
+                      color: isRaining ? Colors.orange : Colors.green,
+                      bgColor: const Color(0xFFE8F5E9),
+                      onTap: () => _showDetailModal(
+                        "Rain Sensor",
+                        getRainStatus(),
+                        _rainHistory,
+                        "Current rain intensity: ${_sensorRainIntensity.toStringAsFixed(0)}",
+                      ),
                     ),
                     _buildCircleProgressCard(
-                      title: "Rain Chance", 
-                      percentage: _rainConfidence.toInt(), 
-                      icon: Icons.thunderstorm_outlined, 
-                      onTap: () => _showDetailModal("Rain Chance", "${_rainConfidence.toInt()}%", _rainConfidenceHistory, "Calculated based on humidity, temperature, and rain sensor.")
+                      title: "Rain Chance",
+                      percentage: _rainConfidence.toInt(),
+                      icon: Icons.thunderstorm_outlined,
+                      onTap: () => _showDetailModal(
+                        "Rain Chance",
+                        "${_rainConfidence.toInt()}%",
+                        _rainConfidenceHistory,
+                        "Calculated based on humidity, temperature, and rain sensor.",
+                      ),
                     ),
                   ],
                 ),
@@ -1110,60 +1472,94 @@ class _DashboardContentState extends State<DashboardContent> {
   }
 
   Widget _buildSensorCard({
-    required String title, 
-    required String value, 
-    String? subtitle, 
-    required IconData icon, 
-    required Color color, 
-    required Color bgColor, 
-    bool showChip = false, 
-    required VoidCallback onTap
+    required String title,
+    required String value,
+    String? subtitle,
+    required IconData icon,
+    required Color color,
+    required Color bgColor,
+    bool showChip = false,
+    required VoidCallback onTap,
   }) {
     return GestureDetector(
       onTap: onTap,
       child: Container(
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
-          color: Colors.white, 
+          color: Colors.white,
           borderRadius: BorderRadius.circular(20),
           boxShadow: [
             BoxShadow(
               color: Colors.black.withOpacity(0.05),
               blurRadius: 10,
               offset: const Offset(0, 4),
-            )
+            ),
           ],
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween, 
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 Container(
-                  padding: const EdgeInsets.all(8), 
-                  decoration: BoxDecoration(color: bgColor, shape: BoxShape.circle), 
-                  child: Icon(icon, color: color, size: 20)
-                ), 
-                if (showChip) 
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: bgColor,
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(icon, color: color, size: 20),
+                ),
+                if (showChip)
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4), 
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 4,
+                    ),
                     decoration: BoxDecoration(
-                      color: Colors.blue.withOpacity(0.1), 
-                      borderRadius: BorderRadius.circular(10)
-                    ), 
-                    child: const Text("Drying...", style: TextStyle(fontSize: 10, color: Colors.blue, fontWeight: FontWeight.bold))
-                  )
-              ]
+                      color: Colors.blue.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Text(
+                      "Drying...",
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: Colors.blue,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+              ],
             ),
             const Spacer(),
-            Text(value, style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
+            Text(
+              value,
+              style: const TextStyle(
+                fontSize: 24,
+                fontWeight: FontWeight.bold,
+                color: Color(0xFF1E2339),
+              ),
+            ),
             if (subtitle != null && subtitle.isNotEmpty) ...[
-              const SizedBox(height: 4), 
-              Text(subtitle, style: TextStyle(fontSize: 12, color: color, fontWeight: FontWeight.bold))
+              const SizedBox(height: 4),
+              Text(
+                subtitle,
+                style: TextStyle(
+                  fontSize: 12,
+                  color: color,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
             ],
             const Spacer(),
-            Text(title, style: TextStyle(fontSize: 13, color: Colors.grey[600], fontWeight: FontWeight.w500)),
+            Text(
+              title,
+              style: TextStyle(
+                fontSize: 13,
+                color: Colors.grey[600],
+                fontWeight: FontWeight.w500,
+              ),
+            ),
           ],
         ),
       ),
@@ -1171,24 +1567,24 @@ class _DashboardContentState extends State<DashboardContent> {
   }
 
   Widget _buildCircleProgressCard({
-    required String title, 
-    required int percentage, 
-    required IconData icon, 
-    required VoidCallback onTap
+    required String title,
+    required int percentage,
+    required IconData icon,
+    required VoidCallback onTap,
   }) {
     return GestureDetector(
       onTap: onTap,
       child: Container(
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
-          color: Colors.white, 
+          color: Colors.white,
           borderRadius: BorderRadius.circular(20),
           boxShadow: [
             BoxShadow(
               color: Colors.black.withOpacity(0.05),
               blurRadius: 10,
               offset: const Offset(0, 4),
-            )
+            ),
           ],
         ),
         child: Column(
@@ -1198,24 +1594,37 @@ class _DashboardContentState extends State<DashboardContent> {
             const Spacer(),
             Center(
               child: Stack(
-                alignment: Alignment.center, 
+                alignment: Alignment.center,
                 children: [
                   SizedBox(
-                    height: 70, 
-                    width: 70, 
+                    height: 70,
+                    width: 70,
                     child: CircularProgressIndicator(
-                      value: percentage / 100, 
-                      strokeWidth: 6, 
-                      backgroundColor: Colors.grey[100], 
-                      color: const Color(0xFF1E2339)
-                    )
-                  ), 
-                  Text("$percentage%", style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold))
-                ]
-              )
+                      value: percentage / 100,
+                      strokeWidth: 6,
+                      backgroundColor: Colors.grey[100],
+                      color: const Color(0xFF1E2339),
+                    ),
+                  ),
+                  Text(
+                    "$percentage%",
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
             ),
             const Spacer(),
-            Text(title, style: TextStyle(fontSize: 13, color: Colors.grey[600], fontWeight: FontWeight.w500)),
+            Text(
+              title,
+              style: TextStyle(
+                fontSize: 13,
+                color: Colors.grey[600],
+                fontWeight: FontWeight.w500,
+              ),
+            ),
           ],
         ),
       ),
@@ -1239,67 +1648,65 @@ class SensorDataPoint {
 class TimeSeriesChartPainter extends CustomPainter {
   final List<SensorDataPoint> data;
   final Color color;
-  
+
   TimeSeriesChartPainter({required this.data, required this.color});
-  
+
   @override
   void paint(Canvas canvas, Size size) {
     if (data.isEmpty) return;
-    
+
     final paint = Paint()
       ..color = color
       ..strokeWidth = 3
       ..style = PaintingStyle.stroke;
-    
+
     final dotPaint = Paint()
       ..color = color
       ..style = PaintingStyle.fill;
-    
+
     double maxVal = data.map((e) => e.value).reduce((a, b) => a > b ? a : b);
     double minVal = data.map((e) => e.value).reduce((a, b) => a < b ? a : b);
-    
-    if (maxVal == minVal) { 
-      maxVal += 1; 
-      minVal -= 1; 
+
+    if (maxVal == minVal) {
+      maxVal += 1;
+      minVal -= 1;
     }
-    
+
     final double spacing = size.width / (data.length - 1);
     final double range = maxVal - minVal;
     final path = Path();
-    
+
     for (int i = 0; i < data.length; i++) {
       final double x = i * spacing;
-      final double y = size.height - ((data[i].value - minVal) / range) * size.height;
-      
+      final double y =
+          size.height - ((data[i].value - minVal) / range) * size.height;
+
       if (i == 0) {
         path.moveTo(x, y);
       } else {
         path.lineTo(x, y);
       }
-      
+
       canvas.drawCircle(Offset(x, y), 4, dotPaint);
     }
-    
+
     canvas.drawPath(path, paint);
-    
+
     final gradientPaint = Paint()
       ..shader = LinearGradient(
         begin: Alignment.topCenter,
         end: Alignment.bottomCenter,
-        colors: [
-          color.withOpacity(0.3),
-          color.withOpacity(0.0),
-        ],
+        colors: [color.withOpacity(0.3), color.withOpacity(0.0)],
       ).createShader(Rect.fromLTWH(0, 0, size.width, size.height));
-    
+
     final fillPath = Path.from(path);
     fillPath.lineTo(size.width, size.height);
     fillPath.lineTo(0, size.height);
     fillPath.close();
-    
+
     canvas.drawPath(fillPath, gradientPaint);
   }
-  
+
   @override
   bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
 }
