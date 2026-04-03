@@ -209,7 +209,7 @@ class _DashboardContentState extends State<DashboardContent> {
   
   bool _isProfileIncomplete = false;
 
-  // Weather State Variables (Replaces FutureBuilder)
+  // Weather State Variables
   String _currentCity = "Locating...";
   String _weatherTemp = "--";
   String _weatherCondition = "Loading...";
@@ -219,7 +219,6 @@ class _DashboardContentState extends State<DashboardContent> {
   // Sensor data
   double _sensorHumidity = 0;
   double _sensorTemperature = 0;
-  double _sensorLight = 0;
   double _sensorRainIntensity = 4095;
   
   double _rainConfidence = 0;
@@ -227,7 +226,6 @@ class _DashboardContentState extends State<DashboardContent> {
   // Time-series history
   final List<SensorDataPoint> _humidityHistory = [];
   final List<SensorDataPoint> _tempHistory = [];
-  final List<SensorDataPoint> _lightHistory = [];
   final List<SensorDataPoint> _rainHistory = [];
   final List<SensorDataPoint> _rainConfidenceHistory = [];
   final List<double> _weatherHistory = [];
@@ -278,13 +276,11 @@ class _DashboardContentState extends State<DashboardContent> {
 
         double humidity = (sensorData['humidity'] ?? 0).toDouble();
         double temperature = (sensorData['temperature'] ?? 0).toDouble();
-        double light = (sensorData['light'] ?? 0).toDouble();
         double rainIntensity = (sensorData['rainAO'] ?? 0).toDouble();
 
         double rainConfidence = _calculateRainfallConfidence(
           humidity: humidity,
           temperature: temperature,
-          light: light,
           rainIntensity: rainIntensity,
         );
 
@@ -293,13 +289,11 @@ class _DashboardContentState extends State<DashboardContent> {
         setState(() {
           _sensorHumidity = humidity;
           _sensorTemperature = temperature;
-          _sensorLight = light;
           _sensorRainIntensity = rainIntensity;
           _rainConfidence = rainConfidence;
 
           _addToHistory(_humidityHistory, humidity, now);
           _addToHistory(_tempHistory, temperature, now);
-          _addToHistory(_lightHistory, light, now);
           _addToHistory(_rainHistory, rainIntensity, now);
           _addToHistory(_rainConfidenceHistory, rainConfidence, now);
 
@@ -398,7 +392,7 @@ class _DashboardContentState extends State<DashboardContent> {
           });
 
           _startSensorUpdates();
-          _fetchWeather(); // Fetch weather ONLY after Firestore is loaded
+          _fetchWeather();
         }
       } else {
         if (mounted) {
@@ -437,23 +431,20 @@ class _DashboardContentState extends State<DashboardContent> {
   double _calculateRainfallConfidence({
     required double humidity,
     required double temperature,
-    required double light,
     required double rainIntensity,
   }) {
-    const double humidityWeight = 0.35;      
-    const double temperatureWeight = 0.35;   
-    const double lightWeight = 0.20;         
+    // Redistributed weights to account for removed light sensor
+    const double humidityWeight = 0.45;      
+    const double temperatureWeight = 0.45;   
     const double rainIntensityWeight = 0.10; 
 
     double humidityScore = ((humidity - 60) / 40).clamp(0, 1) * 100;
     double tempScore = (1 - ((temperature - 15) / 10).clamp(0, 1)) * 100;
-    double lightScore = (1 - (light / 4000).clamp(0, 1)) * 100;
     double rainScore = ((4095 - rainIntensity) / 4095) * 100;
 
     double confidence = (
       (humidityScore * humidityWeight) +
       (tempScore * temperatureWeight) +
-      (lightScore * lightWeight) +
       (rainScore * rainIntensityWeight)
     );
 
@@ -469,7 +460,6 @@ class _DashboardContentState extends State<DashboardContent> {
     
     _humidityHistory.removeWhere((point) => point.timestamp.isBefore(cutoff));
     _tempHistory.removeWhere((point) => point.timestamp.isBefore(cutoff));
-    _lightHistory.removeWhere((point) => point.timestamp.isBefore(cutoff));
     _rainHistory.removeWhere((point) => point.timestamp.isBefore(cutoff));
     _rainConfidenceHistory.removeWhere((point) => point.timestamp.isBefore(cutoff));
   }
@@ -491,7 +481,6 @@ class _DashboardContentState extends State<DashboardContent> {
     }
 
     try {
-      // Split "Manila, Philippines" and only send "Manila" to avoid API crash
       String queryName = searchLocation.split(',').first.trim();
 
       final geoUrl = 'https://geocoding-api.open-meteo.com/v1/search?name=${Uri.encodeComponent(queryName)}&count=1';
@@ -1028,15 +1017,7 @@ class _DashboardContentState extends State<DashboardContent> {
                       title: "Rain Chance", 
                       percentage: _rainConfidence.toInt(), 
                       icon: Icons.thunderstorm_outlined, 
-                      onTap: () => _showDetailModal("Rain Chance", "${_rainConfidence.toInt()}%", _rainConfidenceHistory, "Calculated based on humidity, temperature, light, and rain sensor.")
-                    ),
-                    _buildSensorCard(
-                      title: "Ambient Light", 
-                      value: "${_sensorLight.toStringAsFixed(0)} lux", 
-                      icon: Icons.wb_sunny_outlined, 
-                      color: Colors.orange, 
-                      bgColor: const Color(0xFFFFF3E0), 
-                      onTap: () => _showDetailModal("Ambient Light", "${_sensorLight.toStringAsFixed(0)} lux", _lightHistory, "Good sunlight for drying.")
+                      onTap: () => _showDetailModal("Rain Chance", "${_rainConfidence.toInt()}%", _rainConfidenceHistory, "Calculated based on humidity, temperature, and rain sensor.")
                     ),
                   ],
                 ),
