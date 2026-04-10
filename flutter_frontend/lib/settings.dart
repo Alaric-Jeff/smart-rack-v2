@@ -115,9 +115,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
         String? imageUrl = data['image_url'];
         Timestamp? createdAt = data['createdAt'];
 
-        // FIX: Match home.dart exactly. Fetch 'image_url' (Cloudinary) instead of 'photoUrl' (SSO)
-        String? imageUrl = data['image_url'];
-
         bool is2FA = data['is2FAEnabled'] ?? false;
 
         // Get actual device ID for RTDB

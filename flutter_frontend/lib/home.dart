@@ -9,7 +9,8 @@ import 'controls.dart';
 import 'notification.dart';
 import 'settings.dart'; 
 import 'edit_profile.dart';
-import 'device_pairing.dart'; 
+import 'device_pairing.dart';
+import 'qr_scanner_screen.dart';
 
 // ============================================
 // TOP LEVEL CONFIGURATION
@@ -66,6 +67,115 @@ class _HomeScreenState extends State<HomeScreen> {
       debugPrint('Error loading device ID: $e');
     }
   }
+
+  // ── QR pairing flow ───────────────────────────────────────────────────────
+  Future<void> _startQRPairing() async {
+    final result = await Navigator.push<String>(
+      context,
+      MaterialPageRoute(builder: (context) => const QRScannerScreen()),
+    );
+
+    if (result == null || !mounted) return;
+
+    try {
+      final data = jsonDecode(result) as Map<String, dynamic>;
+      final String? macId = data['macId'] as String?;
+      final String? pairingCode = data['pairingCode']?.toString();
+
+      if (macId == null || pairingCode == null) {
+        _showSnackBar('Invalid QR code format.', Colors.red);
+        return;
+      }
+
+      await _attemptPairing(macId, pairingCode);
+    } catch (_) {
+      _showSnackBar('Unrecognized QR code.', Colors.red);
+    }
+  }
+
+  Future<void> _attemptPairing(String macId, String pairingCode) async {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(child: CircularProgressIndicator()),
+    );
+
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) {
+        Navigator.pop(context);
+        _showSnackBar('User not authenticated.', Colors.red);
+        return;
+      }
+
+      final deviceQuery = await FirebaseFirestore.instance
+          .collection('devices')
+          .where('macId', isEqualTo: macId)
+          .limit(1)
+          .get();
+
+      if (deviceQuery.docs.isEmpty) {
+        Navigator.pop(context);
+        _showSnackBar('Device not found. Check the MAC ID.', Colors.red);
+        return;
+      }
+
+      final deviceDoc = deviceQuery.docs.first;
+      final deviceData = deviceDoc.data();
+      final String deviceDocId = deviceDoc.id;
+
+      final String storedCode = deviceData['pairingCode']?.toString() ?? '';
+      if (storedCode != pairingCode) {
+        Navigator.pop(context);
+        _showSnackBar('Incorrect pairing code.', Colors.red);
+        return;
+      }
+
+      final userDoc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .get();
+      final List existingDevices =
+          (userDoc.data()?['devices'] as List?) ?? [];
+
+      if (existingDevices.contains(deviceDocId)) {
+        await FirebaseFirestore.instance
+            .collection('users')
+            .doc(user.uid)
+            .update({'currentDeviceConnected': deviceDocId});
+      } else {
+        await FirebaseFirestore.instance
+            .collection('users')
+            .doc(user.uid)
+            .update({
+          'devices': FieldValue.arrayUnion([deviceDocId]),
+          'currentDeviceConnected': deviceDocId,
+        });
+      }
+
+      Navigator.pop(context);
+      _showSnackBar('Device paired successfully!', Colors.green);
+      await _loadDeviceId();
+    } catch (e) {
+      Navigator.pop(context);
+      _showSnackBar('Error pairing device: ${e.toString()}', Colors.red);
+      debugPrint('Pairing error: $e');
+    }
+  }
+
+  void _showSnackBar(String message, Color color) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: color,
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        duration: const Duration(seconds: 3),
+      ),
+    );
+  }
+  // ── END QR pairing ────────────────────────────────────────────────────────
 
   void _showNoDeviceDialog() {
     showDialog(
@@ -133,13 +243,11 @@ class _HomeScreenState extends State<HomeScreen> {
             }
 
             if (index == 2) {
-              Navigator.push(
-                context, 
-                MaterialPageRoute(builder: (context) => const DevicePairingScreen())
-              ).then((_) => _loadDeviceId());
-            } else {
-              setState(() => _selectedIndex = index);
+              _startQRPairing();
+              return;
             }
+
+            setState(() => _selectedIndex = index);
           },
           
           items: [
@@ -433,7 +541,6 @@ class _DashboardContentState extends State<DashboardContent> {
     required double temperature,
     required double rainIntensity,
   }) {
-    // Redistributed weights to account for removed light sensor
     const double humidityWeight = 0.45;      
     const double temperatureWeight = 0.45;   
     const double rainIntensityWeight = 0.10; 
@@ -470,10 +577,10 @@ class _DashboardContentState extends State<DashboardContent> {
     if (searchLocation.isEmpty) {
       if (mounted) {
         setState(() {
-          _currentCity = "Location Not Set";
+          _currentCity = "Tap to set location";
           _weatherTemp = "--";
-          _weatherCondition = "Setup Location";
-          _weatherDesc = "Tap your profile to add region";
+          _weatherCondition = "No Location Set";
+          _weatherDesc = "Tap here to set your region";
           _weatherIcon = Icons.location_off;
         });
       }
@@ -496,7 +603,7 @@ class _DashboardContentState extends State<DashboardContent> {
             _currentCity = "Unknown Region";
             _weatherTemp = "--";
             _weatherCondition = "Invalid Location";
-            _weatherDesc = "Please update your region";
+            _weatherDesc = "Tap to update your region";
             _weatherIcon = Icons.wrong_location_outlined;
           });
         }
@@ -776,19 +883,7 @@ class _DashboardContentState extends State<DashboardContent> {
                           children: [
                             const Text("Recent History (Last 30 min)", style: TextStyle(color: Colors.grey, fontSize: 14)),
                             const SizedBox(height: 20),
-                            
-                            title == "Weather" 
-                            ? const SizedBox(
-                                height: 100, 
-                                width: double.infinity, 
-                                child: Center(
-                                  child: Text(
-                                    "Forecast data provided by external weather service", 
-                                    style: TextStyle(color: Colors.grey, fontStyle: FontStyle.italic, fontWeight: FontWeight.w500)
-                                  )
-                                )
-                              )
-                            : historyData.isEmpty
+                            historyData.isEmpty
                                 ? SizedBox(height: 100, width: double.infinity, child: Center(child: Text("Waiting for sensor data...", style: TextStyle(color: Colors.grey.shade400, fontStyle: FontStyle.italic))))
                                 : SizedBox(height: 150, width: double.infinity, child: CustomPaint(painter: TimeSeriesChartPainter(data: historyData, color: const Color(0xFF2962FF)))),
                           ],
@@ -798,10 +893,11 @@ class _DashboardContentState extends State<DashboardContent> {
                       const Text("Status", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF1E2339))),
                       const SizedBox(height: 8),
                       Text(
-                          title == "Weather" 
-                            ? "Weather conditions are updated periodically based on your region. This data is independent of your local sensors."
-                            : (value == "0.0" || value == "0" || _currentDeviceConnected == null ? "Connect your Smart Rack sensors to see real-time status." : statusMsg),
-                          style: const TextStyle(fontSize: 14, color: Color(0xFF5A6175), height: 1.5)),
+                        value == "0.0" || value == "0" || _currentDeviceConnected == null
+                            ? "Connect your Smart Rack sensors to see real-time status."
+                            : statusMsg,
+                        style: const TextStyle(fontSize: 14, color: Color(0xFF5A6175), height: 1.5),
+                      ),
                     ],
                   ),
                 ),
@@ -937,13 +1033,23 @@ class _DashboardContentState extends State<DashboardContent> {
             ] else 
               const SizedBox(height: 24),
 
+            // ── CHANGED: weather card now navigates to EditProfileScreen ──
             GestureDetector(
-              onTap: () => _showDetailModal("Weather", _weatherTemp, [], "Current weather is optimal."),
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (context) => const EditProfileScreen()),
+                ).then((_) => _fetchUserData());
+              },
               child: Container(
                 width: double.infinity,
                 padding: const EdgeInsets.all(24),
                 decoration: BoxDecoration(
-                  gradient: const LinearGradient(colors: [Color(0xFF2962FF), Color(0xFF448AFF)], begin: Alignment.topLeft, end: Alignment.bottomRight),
+                  gradient: const LinearGradient(
+                    colors: [Color(0xFF2962FF), Color(0xFF448AFF)],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
                   borderRadius: BorderRadius.circular(24),
                   boxShadow: [BoxShadow(color: Colors.blue.withOpacity(0.3), blurRadius: 20, offset: const Offset(0, 10))],
                 ),
@@ -956,8 +1062,18 @@ class _DashboardContentState extends State<DashboardContent> {
                         children: [
                           Container(
                             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                            decoration: BoxDecoration(color: Colors.white.withOpacity(0.2), borderRadius: BorderRadius.circular(20)),
-                            child: Row(mainAxisSize: MainAxisSize.min, children: [const Icon(Icons.location_on, color: Colors.white, size: 12), const SizedBox(width: 4), Text(_currentCity, style: const TextStyle(color: Colors.white, fontSize: 12))]),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withOpacity(0.2),
+                              borderRadius: BorderRadius.circular(20),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Icon(Icons.location_on, color: Colors.white, size: 12),
+                                const SizedBox(width: 4),
+                                Text(_currentCity, style: const TextStyle(color: Colors.white, fontSize: 12)),
+                              ],
+                            ),
                           ),
                           const SizedBox(height: 12),
                           Text(_weatherCondition, style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold)),
@@ -965,6 +1081,18 @@ class _DashboardContentState extends State<DashboardContent> {
                           Text(_weatherDesc, style: TextStyle(color: Colors.white.withOpacity(0.9), fontSize: 13, height: 1.4)),
                           const SizedBox(height: 10),
                           Text(_weatherTemp, style: const TextStyle(color: Colors.white, fontSize: 32, fontWeight: FontWeight.bold)),
+                          const SizedBox(height: 8),
+                          // ── hint label so user knows it's tappable ──
+                          Row(
+                            children: [
+                              Icon(Icons.edit_location_alt_outlined, color: Colors.white.withOpacity(0.75), size: 13),
+                              const SizedBox(width: 4),
+                              Text(
+                                "Tap to change location",
+                                style: TextStyle(color: Colors.white.withOpacity(0.75), fontSize: 11),
+                              ),
+                            ],
+                          ),
                         ],
                       ),
                     ),
