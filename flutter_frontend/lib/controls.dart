@@ -42,7 +42,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
 
   // --- FAN STATE ---
   bool _isDryingSystemOn = false;
-  String _selectedFanMode = 'low';
   String? _selectedFanTimer;
   bool _isFanCommandProcessing = false;
   
@@ -329,7 +328,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
       final data = json.decode(jsonStr);
       final actuator = data['actuator'];
       final fan = data['fan'];
-      final fanSpeed = data['fanSpeed'];
       final timerRemaining = data['timerRemaining'];
 
       if (!mounted) return;
@@ -339,7 +337,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
           _isDryingSystemOn = fan == 'on';
           if (!_isDryingSystemOn) _cancelLocalTimer();
         }
-        if (fanSpeed != null) _selectedFanMode = _validateSpeed(fanSpeed);
         
         if (timerRemaining != null && timerRemaining is int && timerRemaining > 0) {
           final endsAtMs = DateTime.now().millisecondsSinceEpoch + (timerRemaining * 1000);
@@ -487,18 +484,19 @@ class _ControlsScreenState extends State<ControlsScreen> {
       final data = snapshot.value as Map<dynamic, dynamic>?;
       if (data != null) {
         final state = data['state'] as String?;
-        final speed = data['speed'] as String?;
         final timerEndsAt = data['timerEndsAt'];
         setState(() {
           _isDryingSystemOn = state == 'on';
-          _selectedFanMode = _validateSpeed(speed);
           _calculatePower();
         });
         if (timerEndsAt != null) {
           final endsAt = (timerEndsAt as num).toInt();
           final remainingMs = endsAt - DateTime.now().millisecondsSinceEpoch;
-          if (remainingMs > 0) _restoreTimer(endsAt, remainingMs);
-          else _clearRtdbTimer();
+          if (remainingMs > 0) {
+            _restoreTimer(endsAt, remainingMs);
+          } else {
+            _clearRtdbTimer();
+          }
         }
       }
     }
@@ -518,7 +516,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
         if (data == null) return;
 
         final state = data['state'] as String?;
-        final speed = data['speed'] as String?;
         final timerEndsAt = data['timerEndsAt'];
 
         final commandRejected = data['commandRejected'] as bool? ?? false;
@@ -533,7 +530,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
                 _isFanCommandProcessing = false;
                 _suppressListenerUpdate = false;
                 _isDryingSystemOn = newOn;
-                if (speed != null) _selectedFanMode = _validateSpeed(speed);
                 _calculatePower();
               });
               _showRejectionSnackBar('Fan command blocked by device safety interlock.');
@@ -556,9 +552,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
                _cancelLocalTimer();
             }
 
-            if (speed != null) {
-              _selectedFanMode = _validateSpeed(speed);
-            }
             _isFanCommandProcessing = false;
             _calculatePower();
           });
@@ -683,14 +676,13 @@ class _ControlsScreenState extends State<ControlsScreen> {
     });
 
     if (_isBleConnected) {
-      _sendBleCommand('fan:on:$_selectedFanMode:$minutes');
+      _sendBleCommand('fan:on:$minutes');
     }
 
     _db
         .ref('devices/${widget.deviceId}/fans')
         .update({
       'target': 'on', 
-      'speed': _selectedFanMode,
       'duration': minutes, 
       'timerEndsAt': endsAtMs,
       'lastCommandAt': ServerValue.timestamp,
@@ -857,13 +849,12 @@ class _ControlsScreenState extends State<ControlsScreen> {
     });
 
     if (_isBleConnected) {
-      final String cmd = newState ? 'fan:on:$_selectedFanMode:0' : 'fan:off';
+      final String cmd = newState ? 'fan:on:0' : 'fan:off';
       final bool sent = await _sendBleCommand(cmd);
       if (sent) {
         _startFanCooldown();
         _db.ref('devices/${widget.deviceId}/fans').update({
           'target': newState ? 'on' : 'off',
-          if (newState) 'speed': _selectedFanMode,
           if (newState) 'duration': 0, 
           'timerEndsAt': newState ? null : null,
           'commandRejected': false,
@@ -891,7 +882,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
             .ref('devices/${widget.deviceId}/fans')
             .update({
           'target': 'on',
-          'speed': _selectedFanMode,
           'duration': 0, 
           'commandRejected': false,
           'clientTimestamp': ts,
@@ -916,69 +906,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
             duration: const Duration(seconds: 3),
           ),
         );
-      }
-    }
-  }
-
-  Future<void> _handleFanModeSelection(String rtdbValue) async {
-    if (widget.deviceId.isEmpty) {
-      _showNoDeviceDialog();
-      return;
-    }
-    if (_isChildProtectionEnabled) return;
-
-    final validatedSpeed = _validateSpeed(rtdbValue);
-    setState(() => _selectedFanMode = validatedSpeed);
-
-    int currentTimerMins = (_dryingTimer != null && _remainingSeconds > 0) ? (_remainingSeconds / 60).ceil() : 0;
-
-    if (_isBleConnected) {
-      if (_isDryingSystemOn) {
-        await _sendBleCommand('fan:on:$validatedSpeed:$currentTimerMins');
-      }
-      final int ts = DateTime.now().millisecondsSinceEpoch;
-      _lastFanCommandTs = ts;
-      _db.ref('devices/${widget.deviceId}/fans').update({
-        'speed': validatedSpeed,
-        if (_isDryingSystemOn) 'target': 'on',
-        if (_isDryingSystemOn) 'duration': currentTimerMins,
-        'commandRejected': false,
-        'clientTimestamp': ts,
-        'lastCommandAt': ServerValue.timestamp,
-      }).catchError((_) {});
-      return;
-    }
-
-    try {
-      final int ts = DateTime.now().millisecondsSinceEpoch;
-      _lastFanCommandTs = ts;
-      final Map<String, dynamic> update = {
-        'speed': validatedSpeed,
-        'commandRejected': false,
-        'clientTimestamp': ts,
-        'lastCommandAt': ServerValue.timestamp,
-      };
-
-      if (_isDryingSystemOn) {
-        update['target'] = 'on';
-        update['duration'] = currentTimerMins;
-      }
-
-      await _db
-          .ref('devices/${widget.deviceId}/fans')
-          .update(update);
-
-    } catch (e) {
-      debugPrint('Fan mode error: $e');
-      if (mounted) {
-        final snapshot = await _db
-            .ref('devices/${widget.deviceId}/fans/speed')
-            .get();
-        if (snapshot.exists && mounted) {
-          setState(() {
-            _selectedFanMode = _validateSpeed(snapshot.value as String?);
-          });
-        }
       }
     }
   }
@@ -1087,32 +1014,13 @@ class _ControlsScreenState extends State<ControlsScreen> {
     }
   }
 
-  String _validateSpeed(String? speed) {
-    const validSpeeds = ['low', 'mid', 'high'];
-    if (speed != null && validSpeeds.contains(speed)) {
-      return speed;
-    }
-    return 'low';
-  }
-
   void _calculatePower() {
     int newPower = 2;
     if (_isRodExtended) newPower += 5;
 
     if (_isDryingSystemOn) {
-      switch (_selectedFanMode) {
-        case 'low':
-          newPower += 100;
-          break;
-        case 'mid':
-          newPower += 250;
-          break;
-        case 'high':
-          newPower += 450;
-          break;
-        default:
-          newPower += 100;
-      }
+      // Static power value for when the fan is purely ON
+      newPower += 100;
     }
 
     _powerConsumption = newPower;
@@ -1122,19 +1030,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
     int minutes = totalSeconds ~/ 60;
     int seconds = totalSeconds % 60;
     return '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
-  }
-
-  String _speedToLabel(String rtdbValue) {
-    switch (rtdbValue) {
-      case 'low':
-        return 'Low';
-      case 'mid':
-        return 'Med';
-      case 'high':
-        return 'High';
-      default:
-        return 'Low';
-    }
   }
 
   void _showConfirmation(String title, String action, VoidCallback onConfirm) {
@@ -1449,18 +1344,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
                             ),
                           ),
                       ]),
-                      const SizedBox(height: 24),
-                      const Text('Fan Mode',
-                          style: TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.bold,
-                              color: Color(0xFF1E2339))),
-                      const SizedBox(height: 16),
-                      Row(children: [
-                        _buildFanModeButton(label: 'Low', rtdbValue: 'low'),
-                        _buildFanModeButton(label: 'Med', rtdbValue: 'mid'),
-                        _buildFanModeButton(label: 'High', rtdbValue: 'high'),
-                      ]),
                     ],
                   ),
                 ),
@@ -1531,18 +1414,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
                                 letterSpacing: 2.0,
                                 height: 1.0),
                           ),
-                          if (_isDryingSystemOn) ...[
-                            const SizedBox(height: 8),
-                            Text(
-                              '${_speedToLabel(_selectedFanMode).toUpperCase()} SPEED',
-                              style: TextStyle(
-                                color: Colors.white.withOpacity(0.5),
-                                fontSize: 12,
-                                fontWeight: FontWeight.bold,
-                                letterSpacing: 1.5,
-                              ),
-                            ),
-                          ],
                           if (isRunning) ...[
                             const SizedBox(height: 16),
                             Container(
@@ -1600,19 +1471,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
                       child: Divider(),
                     ),
                     _buildStatusRow(
-                      'Fan Speed',
-                      _isDryingSystemOn
-                          ? _speedToLabel(_selectedFanMode).toUpperCase()
-                          : 'OFF',
-                      _isDryingSystemOn
-                          ? const Color(0xFFFF6D00)
-                          : Colors.grey,
-                    ),
-                    const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 12),
-                      child: Divider(),
-                    ),
-                    _buildStatusRow(
                       'Power Consumption',
                       '$_powerConsumption W',
                       const Color(0xFF1E2339),
@@ -1623,57 +1481,6 @@ class _ControlsScreenState extends State<ControlsScreen> {
               ),
               const SizedBox(height: 100),
             ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildFanModeButton({
-    required String label,
-    required String rtdbValue,
-  }) {
-    final bool isSelected = _selectedFanMode == rtdbValue;
-
-    return Expanded(
-      child: GestureDetector(
-        onTap: () {
-          if (widget.deviceId.isEmpty) {
-            _showNoDeviceDialog();
-            return;
-          }
-          if (_isChildProtectionEnabled) return;
-          if (!isSelected) {
-            _handleFanModeSelection(rtdbValue);
-          }
-        },
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 200),
-          margin: const EdgeInsets.symmetric(horizontal: 6),
-          padding: const EdgeInsets.symmetric(vertical: 14),
-          decoration: BoxDecoration(
-            color: isSelected
-                ? const Color(0xFFFF6D00)
-                : Colors.grey[100],
-            borderRadius: BorderRadius.circular(30),
-            boxShadow: isSelected
-                ? [
-                    BoxShadow(
-                        color: const Color(0xFFFF6D00).withOpacity(0.3),
-                        blurRadius: 8,
-                        offset: const Offset(0, 4))
-                  ]
-                : [],
-          ),
-          child: Center(
-            child: Text(
-              label,
-              style: TextStyle(
-                fontSize: 13,
-                fontWeight: FontWeight.w600,
-                color: isSelected ? Colors.white : const Color(0xFF5A6175),
-              ),
-            ),
           ),
         ),
       ),

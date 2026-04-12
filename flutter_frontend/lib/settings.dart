@@ -21,7 +21,6 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   // --- STATE VARIABLES ---
   bool _autoRetract = false;
-  bool _childProtection = false; // REPLACED _safetyLock
   bool _notificationsEnabled = true;
 
   // --- 2FA State ---
@@ -56,7 +55,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
       setState(() {
         _autoRetract = prefs.getBool('auto_retract') ?? false;
-        _childProtection = prefs.getBool('child_protection') ?? false;
         _notificationsEnabled = prefs.getBool('notifications') ?? true;
       });
     } catch (e) {
@@ -80,7 +78,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   // --- FETCH USER DATA ---
-// --- FETCH USER DATA ---
   Future<void> _fetchUserData({bool showLoading = false}) async {
     try {
       final bool shouldShowLoading = showLoading || _userName == "Loading...";
@@ -187,18 +184,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   String _getMonthName(int month) {
     const months = [
-      'January',
-      'February',
-      'March',
-      'April',
-      'May',
-      'June',
-      'July',
-      'August',
-      'September',
-      'October',
-      'November',
-      'December',
+      'January', 'February', 'March', 'April', 'May', 'June',
+      'July', 'August', 'September', 'October', 'November', 'December',
     ];
     return months[month - 1];
   }
@@ -287,222 +274,39 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  // --- NEW: CHILD PROTECTION TOGGLE WITH PASSWORD VERIFICATION ---
-  Future<void> _handleChildProtectionToggle(bool newValue) async {
-    final user = _auth.currentUser;
-    if (user == null) return;
-
-    // 1. Check if user has an email/password provider
-    bool hasPassword = user.providerData.any(
-      (info) => info.providerId == 'password',
-    );
-
-    // 2. If NO password (e.g., SSO only), prompt to set one in Edit Profile
-    if (!hasPassword) {
-      showDialog(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text(
-            "Password Required",
-            style: TextStyle(
-              fontWeight: FontWeight.bold,
-              color: Color(0xFF1E2339),
-            ),
-          ),
-          content: const Text(
-            "You are signed in via Google (SSO). To use Child Protection, you must set a password in your profile first.",
-          ),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(20),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text("CANCEL", style: TextStyle(color: Colors.grey)),
-            ),
-            ElevatedButton(
-              onPressed: () {
-                Navigator.pop(context);
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => const EditProfileScreen(),
-                  ),
-                ).then((_) => _fetchUserData());
-              },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF2962FF),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(8),
-                ),
-              ),
-              child: const Text(
-                "EDIT PROFILE",
-                style: TextStyle(color: Colors.white),
-              ),
-            ),
-          ],
-        ),
-      );
-      return;
-    }
-
-    // 3. If HAS password, prompt to enter it
-    final TextEditingController passwordController = TextEditingController();
-    bool isVerifying = false;
-    String? errorMessage;
-
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (dialogContext) {
-        return StatefulBuilder(
-          builder: (context, setDialogState) {
-            return AlertDialog(
-              title: const Text(
-                "Security Verification",
-                style: TextStyle(
-                  fontWeight: FontWeight.bold,
-                  color: Color(0xFF1E2339),
-                ),
-              ),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    "Please enter your password to turn ${newValue ? 'ON' : 'OFF'} Child Protection.",
-                  ),
-                  const SizedBox(height: 16),
-                  TextField(
-                    controller: passwordController,
-                    obscureText: true,
-                    decoration: InputDecoration(
-                      hintText: "Password",
-                      errorText: errorMessage,
-                      prefixIcon: const Icon(Icons.lock_outline),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(20),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: isVerifying
-                      ? null
-                      : () => Navigator.pop(dialogContext),
-                  child: const Text(
-                    "CANCEL",
-                    style: TextStyle(color: Colors.grey),
-                  ),
-                ),
-                ElevatedButton(
-                  onPressed: isVerifying
-                      ? null
-                      : () async {
-                          if (passwordController.text.isEmpty) {
-                            setDialogState(
-                              () => errorMessage = "Password cannot be empty",
-                            );
-                            return;
-                          }
-
-                          setDialogState(() {
-                            isVerifying = true;
-                            errorMessage = null;
-                          });
-
-                          try {
-                            AuthCredential credential =
-                                EmailAuthProvider.credential(
-                                  email: user.email!,
-                                  password: passwordController.text,
-                                );
-
-                            // Re-authenticate
-                            await user.reauthenticateWithCredential(credential);
-
-                            // Success! Proceed to update settings
-                            if (mounted) {
-                              Navigator.pop(dialogContext);
-                              _updateSetting('child_protection', newValue);
-                            }
-                          } catch (e) {
-                            setDialogState(() {
-                              isVerifying = false;
-                              errorMessage =
-                                  "Incorrect password. Please try again.";
-                            });
-                          }
-                        },
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF2962FF),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                  ),
-                  child: isVerifying
-                      ? const SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(
-                            color: Colors.white,
-                            strokeWidth: 2,
-                          ),
-                        )
-                      : const Text(
-                          "VERIFY",
-                          style: TextStyle(color: Colors.white),
-                        ),
-                ),
-              ],
-            );
-          },
-        );
-      },
-    );
-  }
-
   // --- SETTINGS UPDATER ---
   Future<void> _updateSetting(String key, dynamic value) async {
     // 1. Update UI and SharedPreferences instantly
     setState(() {
       if (key == 'auto_retract') _autoRetract = value;
-      if (key == 'child_protection') _childProtection = value;
       if (key == 'notifications') _notificationsEnabled = value;
     });
 
     try {
       final prefs = await SharedPreferences.getInstance();
       if (key == 'auto_retract') await prefs.setBool('auto_retract', value);
-      if (key == 'child_protection')
-        await prefs.setBool('child_protection', value);
       if (key == 'notifications') await prefs.setBool('notifications', value);
     } catch (e) {
       debugPrint("Error saving setting to SharedPreferences: $e");
     }
 
-    // 2. If it is Child Protection, also update Realtime Database
-    if (key == 'child_protection') {
+    // 2. If it is Auto Retract, also update Realtime Database
+    if (key == 'auto_retract') {
       if (_actualDeviceId != null && _actualDeviceId!.isNotEmpty) {
         try {
           await FirebaseDatabase.instance
               .ref('devices/$_actualDeviceId/settings')
-              .update({'childProtection': value});
+              .update({'autoRetract': value});
 
-          debugPrint("Child Protection status ($value) sent to RTDB.");
+          debugPrint("Auto Retract status ($value) sent to RTDB.");
 
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
                 content: Text(
                   value
-                      ? "Child Protection Enabled"
-                      : "Child Protection Disabled",
+                      ? "Automatic Device Retraction Enabled"
+                      : "Automatic Device Retraction Disabled",
                 ),
                 backgroundColor: value ? Colors.blue : Colors.grey,
                 duration: const Duration(seconds: 2),
@@ -511,15 +315,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
             );
           }
         } catch (e) {
-          debugPrint("Error saving Child Protection to RTDB: $e");
+          debugPrint("Error saving Auto Retract to RTDB: $e");
           // Revert UI if RTDB fails
           setState(() {
-            _childProtection = !value;
+            _autoRetract = !value;
           });
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(
-                content: Text("Failed to update Child Protection on device."),
+                content: Text("Failed to update Automatic Retraction on device."),
                 backgroundColor: Colors.red,
                 duration: Duration(seconds: 2),
                 behavior: SnackBarBehavior.floating,
@@ -528,7 +332,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           }
         }
       } else {
-        debugPrint("Cannot update Child Protection: No device connected.");
+        debugPrint("Cannot update Auto Retract: No device connected.");
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
@@ -1035,14 +839,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
                 child: Column(
                   children: [
-                    // --- CHILD PROTECTION TOGGLE ---
+                    // --- AUTOMATIC RETRACTION TOGGLE (REPLACED CHILD PROTECTION) ---
                     _buildSwitchTile(
-                      title: "Child Protection",
-                      subtitle: "Require password to access manual controls",
-                      icon: Icons.shield_outlined,
-                      value: _childProtection,
+                      title: "Automatic Device Retraction",
+                      subtitle: "Retract rack automatically when rain is detected",
+                      icon: Icons.auto_mode, // Changed to a more fitting automation icon
+                      value: _autoRetract,
                       onChanged: (val) {
-                        _handleChildProtectionToggle(val);
+                        _showConfirmation(
+                          "Automatic Retraction",
+                          val,
+                          () => _updateSetting('auto_retract', val),
+                        );
                       },
                     ),
                   ],
