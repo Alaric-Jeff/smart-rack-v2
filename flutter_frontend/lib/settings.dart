@@ -20,7 +20,7 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   // --- STATE VARIABLES ---
-  bool _autoRetract = false;
+  bool _autoExtend = false;
   bool _notificationsEnabled = true;
 
   // --- 2FA State ---
@@ -54,7 +54,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (!mounted) return;
 
       setState(() {
-        _autoRetract = prefs.getBool('auto_retract') ?? false;
+        _autoExtend = prefs.getBool('auto_extend') ?? false;
         _notificationsEnabled = prefs.getBool('notifications') ?? true;
       });
     } catch (e) {
@@ -164,7 +164,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             _deviceId = "LD-${user.uid.substring(0, 8).toUpperCase()}";
             _actualDeviceId = null;
             _memberSince = "Recently";
-            _userProfileUrl = null; 
+            _userProfileUrl = null;
             _isLoadingUserData = false;
           });
         }
@@ -278,35 +278,35 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _updateSetting(String key, dynamic value) async {
     // 1. Update UI and SharedPreferences instantly
     setState(() {
-      if (key == 'auto_retract') _autoRetract = value;
+      if (key == 'auto_extend') _autoExtend = value;
       if (key == 'notifications') _notificationsEnabled = value;
     });
 
     try {
       final prefs = await SharedPreferences.getInstance();
-      if (key == 'auto_retract') await prefs.setBool('auto_retract', value);
+      if (key == 'auto_extend') await prefs.setBool('auto_extend', value);
       if (key == 'notifications') await prefs.setBool('notifications', value);
     } catch (e) {
       debugPrint("Error saving setting to SharedPreferences: $e");
     }
 
-    // 2. If it is Auto Retract, also update Realtime Database
-    if (key == 'auto_retract') {
+    // 2. If it is Auto Extend, also update Realtime Database
+    if (key == 'auto_extend') {
       if (_actualDeviceId != null && _actualDeviceId!.isNotEmpty) {
         try {
           await FirebaseDatabase.instance
               .ref('devices/$_actualDeviceId/settings')
-              .update({'autoRetract': value});
+              .update({'autoExtend': value});
 
-          debugPrint("Auto Retract status ($value) sent to RTDB.");
+          debugPrint("Auto Extend status ($value) sent to RTDB.");
 
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
                 content: Text(
                   value
-                      ? "Automatic Device Retraction Enabled"
-                      : "Automatic Device Retraction Disabled",
+                      ? "Automatic Extension Enabled"
+                      : "Automatic Extension Disabled",
                 ),
                 backgroundColor: value ? Colors.blue : Colors.grey,
                 duration: const Duration(seconds: 2),
@@ -315,15 +315,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
             );
           }
         } catch (e) {
-          debugPrint("Error saving Auto Retract to RTDB: $e");
+          debugPrint("Error saving Auto Extend to RTDB: $e");
           // Revert UI if RTDB fails
           setState(() {
-            _autoRetract = !value;
+            _autoExtend = !value;
           });
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(
-                content: Text("Failed to update Automatic Retraction on device."),
+                content: Text("Failed to update Automatic Extension on device."),
                 backgroundColor: Colors.red,
                 duration: Duration(seconds: 2),
                 behavior: SnackBarBehavior.floating,
@@ -332,7 +332,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           }
         }
       } else {
-        debugPrint("Cannot update Auto Retract: No device connected.");
+        debugPrint("Cannot update Auto Extend: No device connected.");
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
@@ -422,16 +422,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  // --- BLE FUNCTION (Placeholder) ---
-  void _onBluetoothTap() {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text("Bluetooth functionality ready for integration."),
-      ),
-    );
-  }
-
-  // --- CONFIRMATION MODAL (For simple toggles) ---
+  // --- CONFIRMATION MODAL ---
   void _showConfirmation(String title, bool newValue, VoidCallback onConfirm) {
     showDialog(
       context: context,
@@ -839,17 +830,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
                 child: Column(
                   children: [
-                    // --- AUTOMATIC RETRACTION TOGGLE (REPLACED CHILD PROTECTION) ---
                     _buildSwitchTile(
-                      title: "Automatic Device Retraction",
-                      subtitle: "Retract rack automatically when rain is detected",
-                      icon: Icons.auto_mode, // Changed to a more fitting automation icon
-                      value: _autoRetract,
+                      title: "Automatic Rack Extension",
+                      subtitle: "Extend rack automatically when weather is clear",
+                      icon: Icons.auto_mode,
+                      value: _autoExtend,
                       onChanged: (val) {
                         _showConfirmation(
-                          "Automatic Retraction",
+                          "Automatic Extension",
                           val,
-                          () => _updateSetting('auto_retract', val),
+                          () => _updateSetting('auto_extend', val),
                         );
                       },
                     ),
@@ -882,7 +872,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
                 child: Column(
                   children: [
-                    // --- 2FA SWITCH ---
                     _buildSwitchTile(
                       title: "2-Factor Auth",
                       subtitle: "Secure login with OTP",
@@ -954,7 +943,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       endIndent: 20,
                     ),
 
-                    // --- BLUETOOTH BUTTON ---
                     _buildNavTile(
                       title: "Bluetooth Connection",
                       icon: Icons.bluetooth,
@@ -962,8 +950,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         Navigator.push(
                           context,
                           MaterialPageRoute(
-                            builder: (context) =>
-                                const BluetoothPairingScreen(),
+                            builder: (context) => const BluetoothPairingScreen(),
                           ),
                         );
                       },
@@ -994,8 +981,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         Navigator.push(
                           context,
                           MaterialPageRoute(
-                            builder: (context) =>
-                                const TermsAndConditionsScreen(),
+                            builder: (context) => const TermsAndConditionsScreen(),
                           ),
                         );
                       },
