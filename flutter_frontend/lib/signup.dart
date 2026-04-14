@@ -2,6 +2,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'home.dart';
@@ -21,17 +22,14 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
   bool _canResendEmail = true;
   int _resendCooldownSeconds = 0;
   
-  // --- ADDED: Fix for Gmail Backspace Loop ---
   int _lastEmailLength = 0; 
 
-  // --- ADDED: Password Validation State Variables ---
   bool _hasMinLength = false;
   bool _hasUppercase = false;
   bool _hasLowercase = false;
   bool _hasNumber = false;
   bool _hasSpecialChar = false;
 
-  // Controllers
   final TextEditingController _firstNameController = TextEditingController();
   final TextEditingController _lastNameController = TextEditingController();
   final TextEditingController _emailController = TextEditingController();
@@ -39,14 +37,10 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
   final TextEditingController _confirmPasswordController =
       TextEditingController();
 
-  // Firebase Auth & Firestore
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-
-  // Google Sign In
   final GoogleSignIn _googleSignIn = GoogleSignIn();
 
-  // Colors
   final Color _backgroundColor = const Color(0xFFF5F5F5);
   final Color _cardColor = Colors.white;
   final Color _textColor = const Color(0xFF1E2339);
@@ -57,30 +51,24 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
   void initState() {
     super.initState();
     
-    // Initialize email length tracker
     _lastEmailLength = _emailController.text.length;
 
-    // --- UPDATED: Smarter Gmail Listener (Fixes Backspace Trap) ---
     _emailController.addListener(() {
       final text = _emailController.text;
       final newLength = text.length;
 
-      // Only run auto-complete if the user ADDED text (typing), not deleting.
       if (newLength > _lastEmailLength) {
         if (text.endsWith('@g') && !text.contains('@gmail.com')) {
           setState(() {
             _emailController.text = "${text}mail.com";
-            // Move cursor to end
             _emailController.selection = TextSelection.fromPosition(
                 TextPosition(offset: _emailController.text.length));
           });
         }
       }
-      // Update the tracker for the next keystroke
       _lastEmailLength = _emailController.text.length; 
     });
 
-    // --- ADDED: Password Validation Listener ---
     _passwordController.addListener(() {
       final val = _passwordController.text;
       setState(() {
@@ -103,15 +91,43 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
     super.dispose();
   }
 
-  // --- ADDED: Function to Show Scrollable Terms Modal ---
+  // ============================================================
+  // FCM TOKEN REGISTRATION
+  // ============================================================
+  Future<void> _registerFCMToken() async {
+    try {
+      final messaging = FirebaseMessaging.instance;
+
+      await messaging.requestPermission(
+        alert: true,
+        badge: true,
+        sound: true,
+      );
+
+      final token = await messaging.getToken();
+      debugPrint('[FCM] Token: $token');
+
+      final user = _auth.currentUser;
+      if (user == null || token == null) return;
+
+      await _firestore.collection('users').doc(user.uid).set({
+        'fcmToken': token,
+        'lastLoginedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+
+      debugPrint('[FCM] Token saved to Firestore');
+    } catch (e) {
+      debugPrint('[FCM] Error saving token: $e');
+    }
+  }
+
   void _showTermsAndConditionsModal() {
     final ScrollController scrollController = ScrollController();
-    // Using ValueNotifier to track if bottom is reached to rebuild only the button
     final ValueNotifier<bool> reachedBottom = ValueNotifier(false);
 
     scrollController.addListener(() {
       if (scrollController.position.pixels >=
-          scrollController.position.maxScrollExtent - 50) { // -50 for buffer
+          scrollController.position.maxScrollExtent - 50) {
         if (!reachedBottom.value) {
           reachedBottom.value = true;
         }
@@ -123,7 +139,7 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
       builder: (context) => AlertDialog(
         title: const Text("Terms and Conditions"),
         content: SizedBox(
-          height: 400, // Fixed height to ensure scrolling
+          height: 400,
           width: double.maxFinite,
           child: Column(
             children: [
@@ -144,7 +160,6 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        // Simulating long text for demonstration
                         const Text(
                           "SMART RACK TERMS OF SERVICE\n\n",
                           style: TextStyle(fontWeight: FontWeight.bold),
@@ -186,10 +201,9 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                           _isChecked = true;
                         });
                         Navigator.pop(context);
-                        _showSnackBar(
-                            "Terms Accepted", Colors.green);
+                        _showSnackBar("Terms Accepted", Colors.green);
                       }
-                    : null, // Disabled until scrolled
+                    : null,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: canAgree ? _primaryColor : Colors.grey,
                   foregroundColor: Colors.white,
@@ -203,7 +217,6 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
     );
   }
 
-  // --- ADDED: Widget to display visual Password Hints ---
   Widget _buildPasswordValidationRules() {
     return Column(
       children: [
@@ -243,9 +256,6 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
     );
   }
 
-  // Start cooldown timer for resend email (removed - now handled inline in dialog)
-
-  // ✨ Enhanced Manual Signup with Email Verification
   Future<void> _handleSignup() async {
     if (!_isChecked) {
       _showSnackBar(
@@ -262,7 +272,6 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
     setState(() => _isLoading = true);
 
     try {
-      // Step 1: Create Firebase Auth user
       UserCredential userCredential =
           await _auth.createUserWithEmailAndPassword(
         email: _emailController.text.trim(),
@@ -271,10 +280,8 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
 
       String uuid = userCredential.user!.uid;
 
-      // Step 2: Send email verification
       await userCredential.user!.sendEmailVerification();
 
-      // Step 3: Create user document in Firestore with emailVerified flag
       await _firestore.collection('users').doc(uuid).set({
         'uuid': uuid,
         'firstName': _firstNameController.text.trim(),
@@ -342,7 +349,6 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
     }
   }
 
-  // Email Verification Dialog
   void _showEmailVerificationDialog(User user) {
     showDialog(
       context: context,
@@ -392,7 +398,6 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                           try {
                             await user.sendEmailVerification();
 
-                            // Start cooldown and update dialog
                             setState(() {
                               _canResendEmail = false;
                               _resendCooldownSeconds = 60;
@@ -402,7 +407,6 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                                 'Verification email resent successfully',
                                 Colors.green);
 
-                            // Countdown timer that updates both main state and dialog state
                             Future.doWhile(() async {
                               await Future.delayed(const Duration(seconds: 1));
                               if (mounted) {
@@ -412,7 +416,7 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                                     _canResendEmail = true;
                                   }
                                 });
-                                setDialogState(() {}); // Update dialog UI
+                                setDialogState(() {});
                               }
                               return _resendCooldownSeconds > 0 && mounted;
                             });
@@ -459,6 +463,9 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                             'Email verified! Account created successfully.',
                             Colors.green);
 
+                        // Save FCM token after email verification on signup
+                        await _registerFCMToken();
+
                         if (mounted) {
                           Navigator.pushReplacement(
                             context,
@@ -494,7 +501,6 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
     );
   }
 
-  // ✨ Enhanced Google Sign Up with Auto-Login
   Future<void> _handleGoogleSignUp() async {
     setState(() => _isLoading = true);
 
@@ -528,6 +534,9 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
           if (mounted) {
             setState(() => _isLoading = false);
             _showSnackBar('Welcome back! Signing you in...', Colors.green);
+
+            // Save FCM token for returning Google user
+            await _registerFCMToken();
 
             Navigator.pushReplacement(
               context,
@@ -565,6 +574,9 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
         if (mounted) {
           setState(() => _isLoading = false);
           _showSnackBar('Google sign-up successful! Welcome!', Colors.green);
+
+          // Save FCM token for new Google user
+          await _registerFCMToken();
 
           Navigator.pushReplacement(
             context,
@@ -683,7 +695,6 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                     ),
                     const SizedBox(height: 20),
 
-                    // Names Row
                     Row(
                       children: [
                         Expanded(
@@ -695,32 +706,23 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                               if (value == null || value.isEmpty) {
                                 return 'First name is required';
                               }
-
                               String trimmed = value.trim();
-
                               if (trimmed.length < 3) {
                                 return 'Must be at least 3 characters';
                               }
                               if (trimmed.length > 50) {
                                 return 'Must not exceed 50 characters';
                               }
-
-                              // Check for numbers
                               if (RegExp(r'[0-9]').hasMatch(trimmed)) {
                                 return 'Numbers are not allowed';
                               }
-
-                              // Check for double spaces
                               if (trimmed.contains('  ')) {
                                 return 'Multiple spaces are not allowed';
                               }
-
-                              // Check for invalid special characters
                               if (RegExp(r'[!@#$%^&*(),.?":{}|<>+=\[\]\\\/;`~_]')
                                   .hasMatch(trimmed)) {
                                 return 'Special characters are not allowed';
                               }
-
                               return null;
                             },
                           ),
@@ -735,32 +737,23 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                               if (value == null || value.isEmpty) {
                                 return 'Last name is required';
                               }
-
                               String trimmed = value.trim();
-
                               if (trimmed.length < 3) {
                                 return 'Must be at least 3 characters';
                               }
                               if (trimmed.length > 50) {
                                 return 'Must not exceed 50 characters';
                               }
-
-                              // Check for numbers
                               if (RegExp(r'[0-9]').hasMatch(trimmed)) {
                                 return 'Numbers are not allowed';
                               }
-
-                              // Check for double spaces
                               if (trimmed.contains('  ')) {
                                 return 'Multiple spaces are not allowed';
                               }
-
-                              // Check for invalid special characters
                               if (RegExp(r'[!@#$%^&*(),.?":{}|<>+=\[\]\\\/;`~_]')
                                   .hasMatch(trimmed)) {
                                 return 'Special characters are not allowed';
                               }
-
                               return null;
                             },
                           ),
@@ -769,7 +762,6 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                     ),
                     const SizedBox(height: 12),
 
-                    // Email
                     _buildLabelAndField(
                       label: 'EMAIL',
                       hint: 'userexample123@gmail.com',
@@ -788,7 +780,6 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                     ),
                     const SizedBox(height: 12),
 
-                    // Password
                     _buildLabelAndField(
                       label: 'PASSWORD',
                       hint: 'Create a strong password',
@@ -801,7 +792,6 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                         if (value == null || value.isEmpty) {
                           return 'Password is required';
                         }
-                        // Validation logic handled visually, but we verify here for form submit
                         if (!_hasMinLength ||
                             !_hasUppercase ||
                             !_hasLowercase ||
@@ -812,12 +802,10 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                         return null;
                       },
                     ),
-                    // --- Visual Password Hints ---
                     _buildPasswordValidationRules(),
 
                     const SizedBox(height: 12),
 
-                    // Confirm Password
                     _buildLabelAndField(
                       label: 'CONFIRM PASSWORD',
                       hint: 'Confirm your password',
@@ -838,7 +826,6 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                     ),
                     const SizedBox(height: 15),
 
-                    // Checkbox & Terms
                     Row(
                       crossAxisAlignment: CrossAxisAlignment.center,
                       children: [
@@ -851,7 +838,6 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                             shape: RoundedRectangleBorder(
                                 borderRadius: BorderRadius.circular(4)),
                             onChanged: (bool? value) {
-                              // If unchecking, allow it. If checking, force modal
                               if (value == false) {
                                 setState(() => _isChecked = false);
                               } else {
@@ -878,7 +864,6 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                                   ),
                                   recognizer: TapGestureRecognizer()
                                     ..onTap = () {
-                                      // --- Open Scrollable Modal ---
                                       _showTermsAndConditionsModal();
                                     },
                                 ),
@@ -890,7 +875,6 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                     ),
                     const SizedBox(height: 20),
 
-                    // Create Account Button
                     SizedBox(
                       width: double.infinity,
                       height: 50,
@@ -914,7 +898,6 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
 
                     const SizedBox(height: 15),
 
-                    // SSO Divider
                     Row(
                       children: [
                         Expanded(
@@ -933,13 +916,11 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                     ),
                     const SizedBox(height: 15),
 
-                    // Google SSO Button
                     _buildBigSocialButton("Google", 'assets/google.png',
                         Icons.g_mobiledata, _handleGoogleSignUp),
 
                     const SizedBox(height: 15),
 
-                    // Login Footer
                     Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
@@ -964,8 +945,6 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
       ),
     );
   }
-
-  // --- Helper Widgets ---
 
   Widget _buildLabelAndField({
     required String label,
