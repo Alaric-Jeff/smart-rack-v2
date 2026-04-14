@@ -659,6 +659,60 @@ class _DashboardContentState extends State<DashboardContent> {
     return {"condition": "Rainy", "description": "Showers", "icon": Icons.grain};
   }
 
+  // ==========================================================
+  // DETERMINISTIC HEURISTIC PREDICTION MODEL
+  // ==========================================================
+  Map<String, dynamic> _getDryingPrediction(double temp, double humidity, bool isRaining) {
+    // 1. Core Heuristic Formula
+    double baseDryingMinutes = 60.0;
+    double tempFactor = 1.0 - ((temp - 20) / 40).clamp(0.0, 1.0);
+    double humidFactor = (humidity / 100).clamp(0.0, 1.0);
+    int estimatedMinutes = (baseDryingMinutes * (0.4 + humidFactor * 0.4 + tempFactor * 0.2)).round();
+
+    // 2. Condition Tiers (Maps formula outputs to visual tiers)
+    if (isRaining || humidity > 85) {
+      return {
+        "label": "Not recommended — bring clothes in",
+        "color": Colors.red.shade700,
+        "bgColor": Colors.red.shade50,
+        "minutes": "--",
+        "icon": Icons.do_not_disturb_alt
+      };
+    } else if (temp > 30 && humidity < 50) {
+      return {
+        "label": "Great drying conditions",
+        "color": Colors.green.shade700,
+        "bgColor": Colors.green.shade50,
+        "minutes": "~$estimatedMinutes min",
+        "icon": Icons.wb_sunny_outlined
+      };
+    } else if (temp >= 20 && humidity >= 50 && humidity <= 70) {
+      return {
+        "label": "Good conditions",
+        "color": Colors.blue.shade700,
+        "bgColor": Colors.blue.shade50,
+        "minutes": "~$estimatedMinutes min",
+        "icon": Icons.cloud_outlined
+      };
+    } else if (temp >= 15 && humidity > 70 && humidity <= 85) {
+      return {
+        "label": "Slow drying",
+        "color": Colors.orange.shade700,
+        "bgColor": Colors.orange.shade50,
+        "minutes": "~$estimatedMinutes min",
+        "icon": Icons.hourglass_bottom
+      };
+    } else {
+      return {
+        "label": "Variable conditions",
+        "color": Colors.blueGrey.shade700,
+        "bgColor": Colors.blueGrey.shade50,
+        "minutes": "~$estimatedMinutes min",
+        "icon": Icons.analytics_outlined
+      };
+    }
+  }
+
   void _showAccountModal() {
     showModalBottomSheet(
       context: context,
@@ -924,6 +978,9 @@ class _DashboardContentState extends State<DashboardContent> {
     }
 
     bool isRaining = _sensorRainIntensity <= 3500;
+    
+    // Generate the live prediction using the heuristic model
+    final prediction = _getDryingPrediction(_sensorTemperature, _sensorHumidity, isRaining);
 
     return SafeArea(
       child: SingleChildScrollView(
@@ -1104,6 +1161,89 @@ class _DashboardContentState extends State<DashboardContent> {
 
             const SizedBox(height: 24),
 
+            // ── AI PREDICTION CARD ──
+            IgnorePointer(
+              ignoring: !isDeviceConnected,
+              child: Opacity(
+                opacity: isDeviceConnected ? 1.0 : 0.3,
+                child: Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(20),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(20),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.05),
+                        blurRadius: 10,
+                        offset: const Offset(0, 5),
+                      ),
+                    ],
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Icon(Icons.auto_awesome, color: Colors.purple.shade400, size: 20),
+                          const SizedBox(width: 8),
+                          const Text(
+                            'AI PREDICTION',
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.bold,
+                              letterSpacing: 1.2,
+                              color: Colors.grey,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 15),
+                      const Text(
+                        'Estimated Dry Time',
+                        style: TextStyle(fontSize: 16, color: Colors.black87),
+                      ),
+                      const SizedBox(height: 5),
+                      Text(
+                        prediction['minutes'].toString(),
+                        style: TextStyle(
+                          fontSize: 32,
+                          fontWeight: FontWeight.bold,
+                          color: prediction['color'],
+                        ),
+                      ),
+                      const SizedBox(height: 15),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: prediction['bgColor'],
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(prediction['icon'], size: 16, color: prediction['color']),
+                            const SizedBox(width: 8),
+                            Text(
+                              prediction['label'],
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                                color: prediction['color'],
+                              ),
+                            ),
+                          ],
+                        ),
+                      )
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            
+            const SizedBox(height: 24),
+
+            // ── SENSOR DATA GRID ──
             IgnorePointer(
               ignoring: !isDeviceConnected,
               child: Opacity(
