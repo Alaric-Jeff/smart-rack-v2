@@ -1672,7 +1672,7 @@ class _ControlsScreenState extends State<ControlsScreen> {
     );
   }
 
-  Widget _buildOptionButton(
+.  Widget _buildOptionButton(
       String text, String? selectedValue, Function(String) onTap) {
     bool isSelected = selectedValue != null && text == selectedValue;
     return Expanded(
