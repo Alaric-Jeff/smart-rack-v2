@@ -891,20 +891,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       indent: 60,
                       endIndent: 20,
                     ),
-
-                    _buildSwitchTile(
-                      title: "Notifications",
-                      subtitle: "Receive alerts for rain and completion",
-                      icon: Icons.notifications_active_outlined,
-                      value: _notificationsEnabled,
-                      onChanged: (val) {
-                        _showConfirmation(
-                          "Notifications",
-                          val,
-                          () => _updateSetting('notifications', val),
-                        );
-                      },
-                    ),
                     Divider(
                       height: 1,
                       color: Colors.grey.shade100,
