@@ -195,28 +195,30 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  List<Widget> _getPages() {
-    return [
-      DashboardContent(
-        onDeviceIdUpdated: (deviceId) {
-          if (mounted) {
-            setState(() => _currentDeviceId = deviceId);
-          }
-        },
-      ),
-      ControlsScreen(deviceId: _currentDeviceId ?? ''),
-      NotificationsScreen(deviceId: _currentDeviceId ?? ''),
-      const SettingsScreen(),
-    ];
-  }
-
   @override
   Widget build(BuildContext context) {
-    final pages = _getPages();
-    
     return Scaffold(
       backgroundColor: const Color(0xFFF8F9FB),
-      body: pages[_selectedIndex > 2 ? _selectedIndex - 1 : _selectedIndex], 
+      body: Stack(
+        children: [
+          // 1. THE DASHBOARD: Always kept alive in memory, but hidden if not selected
+          Offstage(
+            offstage: _selectedIndex != 0,
+            child: DashboardContent(
+              onDeviceIdUpdated: (deviceId) {
+                if (mounted) {
+                  setState(() => _currentDeviceId = deviceId);
+                }
+              },
+            ),
+          ),
+          
+          // 2. THE OTHER SCREENS: Created only when selected, destroyed when you leave
+          if (_selectedIndex == 1) ControlsScreen(deviceId: _currentDeviceId ?? ''),
+          if (_selectedIndex == 3) NotificationsScreen(deviceId: _currentDeviceId ?? ''),
+          if (_selectedIndex == 4) const SettingsScreen(),
+        ],
+      ),
       
       bottomNavigationBar: Container(
         decoration: BoxDecoration(
