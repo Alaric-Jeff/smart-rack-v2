@@ -1,19 +1,20 @@
 // main.dart
 
 import 'package:flutter/material.dart';
-import 'package:flutter/gestures.dart'; 
+import 'package:flutter/gestures.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:shared_preferences/shared_preferences.dart'; // Add shared_preferences
+import 'package:shared_preferences/shared_preferences.dart';
 import 'firebase_options.dart';
 
 import 'signup.dart';
 import 'terms_and_condtions.dart';
 import 'home.dart';
 import 'otp_screen.dart';
-import 'onboarding_screen.dart'; // Import your onboarding screen
+import 'onboarding_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -22,41 +23,34 @@ void main() async {
     options: DefaultFirebaseOptions.currentPlatform,
   );
 
-  // --- Check Onboarding Status ---
   final prefs = await SharedPreferences.getInstance();
   final bool showHome = prefs.getBool('showHome') ?? false;
 
-  // Pass the showHome value to your app
   runApp(SmartRackApp(showHome: showHome));
 }
 
 class SmartRackApp extends StatelessWidget {
-  final bool showHome; // Add this field
+  final bool showHome;
 
-  const SmartRackApp({super.key, required this.showHome}); // Update constructor
+  const SmartRackApp({super.key, required this.showHome});
 
   @override
   Widget build(BuildContext context) {
-
     final user = FirebaseAuth.instance.currentUser;
 
-    // Logic for initial screen:
     Widget startScreen;
     if (user != null) {
-      // User is logged in -> Go straight to Home
       startScreen = const HomeScreen();
     } else if (showHome) {
-      // User has seen onboarding but is NOT logged in -> Go to Login
       startScreen = const LoginPage();
     } else {
-      // User has NOT seen onboarding -> Go to Onboarding
       startScreen = const OnboardingScreen();
     }
 
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       theme: ThemeData(fontFamily: 'sans-serif'),
-      home: startScreen, 
+      home: startScreen,
     );
   }
 }
@@ -76,21 +70,69 @@ class _LoginPageState extends State<LoginPage> {
   bool _isObscure = true;
   bool _isLoading = false;
 
-  // Firebase Auth & Firestore
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  
-  // Google Sign In
   final GoogleSignIn _googleSignIn = GoogleSignIn();
 
-  // ✨ Enhanced Login with Email Verification & 2FA Check
+  // ============================================================
+  // INIT STATE — listen for FCM token refresh
+  // ============================================================
+  @override
+  void initState() {
+    super.initState();
+
+    FirebaseMessaging.instance.onTokenRefresh.listen((newToken) async {
+      final user = _auth.currentUser;
+      if (user == null) return;
+
+      await _firestore.collection('users').doc(user.uid).set({
+        'fcmToken': newToken,
+      }, SetOptions(merge: true));
+
+      debugPrint('[FCM] Refreshed token saved: $newToken');
+    });
+  }
+
+  // ============================================================
+  // FCM TOKEN REGISTRATION
+  // ============================================================
+  Future<void> _registerFCMToken() async {
+    try {
+      final messaging = FirebaseMessaging.instance;
+
+      await messaging.requestPermission(
+        alert: true,
+        badge: true,
+        sound: true,
+      );
+
+      final token = await messaging.getToken();
+      debugPrint('[FCM] Token: $token');
+
+      final user = _auth.currentUser;
+      if (user == null || token == null) return;
+
+      // set + merge so it works even if doc fields are missing
+      await _firestore.collection('users').doc(user.uid).set({
+        'fcmToken': token,
+        'lastLoginedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+
+      debugPrint('[FCM] Token saved to Firestore');
+    } catch (e) {
+      debugPrint('[FCM] Error saving token: $e');
+    }
+  }
+
+  // ============================================================
+  // LOGIN
+  // ============================================================
   Future<void> _login() async {
     if (!_formKey.currentState!.validate()) return;
 
     setState(() => _isLoading = true);
 
     try {
-      // 1. Sign in with Firebase Auth
       UserCredential userCredential = await _auth.signInWithEmailAndPassword(
         email: _emailController.text.trim(),
         password: _passwordController.text.trim(),
@@ -102,13 +144,12 @@ class _LoginPageState extends State<LoginPage> {
         throw Exception('Authentication failed. Please try again.');
       }
 
-      // 2. Check if email is verified
-      await user.reload(); 
-      user = _auth.currentUser; 
+      await user.reload();
+      user = _auth.currentUser;
 
       if (user != null && !user.emailVerified) {
         await _auth.signOut();
-        
+
         if (mounted) {
           setState(() => _isLoading = false);
           _showEmailVerificationRequiredDialog(user);
@@ -116,20 +157,21 @@ class _LoginPageState extends State<LoginPage> {
         return;
       }
 
-      // 3. Check Firestore for User Doc & 2FA Status
       String uid = user!.uid;
-      DocumentSnapshot userDoc = await _firestore.collection('users').doc(uid).get();
+      DocumentSnapshot userDoc =
+          await _firestore.collection('users').doc(uid).get();
 
-      // Auto-fix: Create missing Firestore document
       if (!userDoc.exists) {
-        debugPrint("User authenticated but missing Firestore doc. Creating one now...");
-        
+        debugPrint(
+            "User authenticated but missing Firestore doc. Creating one now...");
+
         await _firestore.collection('users').doc(uid).set({
           'uuid': uid,
           'email': user.email ?? _emailController.text.trim(),
           'displayName': user.displayName ?? 'User',
           'firstName': user.displayName?.split(' ').first ?? '',
-          'lastName': user.displayName?.split(' ').skip(1).join(' ') ?? '',
+          'lastName':
+              user.displayName?.split(' ').skip(1).join(' ') ?? '',
           'contactNumber': null,
           'signInProvider': 'manual',
           'photoUrl': null,
@@ -140,15 +182,13 @@ class _LoginPageState extends State<LoginPage> {
           'createdAt': FieldValue.serverTimestamp(),
           'updatedAt': FieldValue.serverTimestamp(),
         });
-        
+
         debugPrint("Missing document created successfully.");
-        
-        // ✅ RELOAD the document after creating it
         userDoc = await _firestore.collection('users').doc(uid).get();
       } else {
-        // Sync emailVerified status
         if (userDoc.data() != null) {
-          Map<String, dynamic> userData = userDoc.data() as Map<String, dynamic>;
+          Map<String, dynamic> userData =
+              userDoc.data() as Map<String, dynamic>;
           if (userData['emailVerified'] != user.emailVerified) {
             await _firestore.collection('users').doc(uid).update({
               'emailVerified': user.emailVerified,
@@ -158,7 +198,6 @@ class _LoginPageState extends State<LoginPage> {
         }
       }
 
-      // --- 2FA CHECK LOGIC ---
       bool is2FAEnabled = false;
       if (userDoc.exists && userDoc.data() != null) {
         Map<String, dynamic> data = userDoc.data() as Map<String, dynamic>;
@@ -170,13 +209,14 @@ class _LoginPageState extends State<LoginPage> {
         _showSnackBar('Welcome back!', Colors.green);
 
         if (is2FAEnabled) {
-          // If 2FA is ON -> Go to OTP Screen
+          // Don't save FCM token yet — user hasn't completed 2FA
           Navigator.push(
             context,
             MaterialPageRoute(builder: (context) => const OTPScreen()),
           );
         } else {
-          // If 2FA is OFF -> Go to Home
+          // Save FCM token on successful full login
+          await _registerFCMToken();
           Navigator.pushReplacement(
             context,
             MaterialPageRoute(builder: (context) => const HomeScreen()),
@@ -190,55 +230,69 @@ class _LoginPageState extends State<LoginPage> {
 
         switch (e.code) {
           case 'user-not-found':
-            errorMessage = 'No account found with this email address. Please check your email or sign up.';
+            errorMessage =
+                'No account found with this email address. Please check your email or sign up.';
             break;
           case 'wrong-password':
-            errorMessage = 'Incorrect password. Please try again or reset your password.';
+            errorMessage =
+                'Incorrect password. Please try again or reset your password.';
             break;
           case 'invalid-email':
-            errorMessage = 'The email address format is invalid. Please check and try again.';
+            errorMessage =
+                'The email address format is invalid. Please check and try again.';
             break;
           case 'user-disabled':
-            errorMessage = 'This account has been disabled. Please contact support for assistance.';
+            errorMessage =
+                'This account has been disabled. Please contact support for assistance.';
             break;
           case 'too-many-requests':
-            errorMessage = 'Too many failed login attempts. Please try again later or reset your password.';
+            errorMessage =
+                'Too many failed login attempts. Please try again later or reset your password.';
             break;
           case 'invalid-credential':
-            errorMessage = 'Invalid email or password. Please verify your credentials and try again.';
+            errorMessage =
+                'Invalid email or password. Please verify your credentials and try again.';
             break;
           case 'network-request-failed':
-            errorMessage = 'Network connection failed. Please check your internet connection and try again.';
+            errorMessage =
+                'Network connection failed. Please check your internet connection and try again.';
             break;
           default:
-            errorMessage = e.message ?? 'An unexpected error occurred during login. Please try again.';
+            errorMessage = e.message ??
+                'An unexpected error occurred during login. Please try again.';
         }
-        
+
         _showSnackBar(errorMessage, Colors.red);
       }
     } catch (e) {
       if (mounted) {
         setState(() => _isLoading = false);
-        _showSnackBar('An unexpected error occurred. Please check your connection and try again.', Colors.red);
+        _showSnackBar(
+            'An unexpected error occurred. Please check your connection and try again.',
+            Colors.red);
         debugPrint('Login error: $e');
       }
     }
   }
 
-  // Email Verification Required Dialog
+  // ============================================================
+  // EMAIL VERIFICATION DIALOG
+  // ============================================================
   void _showEmailVerificationRequiredDialog(User user) {
     final String userEmail = user.email ?? _emailController.text.trim();
     final String userPassword = _passwordController.text.trim();
-    
+
     showDialog(
       context: context,
       barrierDismissible: false,
       builder: (BuildContext context) {
         return AlertDialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
           title: Row(
             children: [
-              Icon(Icons.mark_email_unread, color: Colors.orange.shade700, size: 28),
+              Icon(Icons.mark_email_unread,
+                  color: Colors.orange.shade700, size: 28),
               const SizedBox(width: 10),
               const Expanded(
                 child: Text(
@@ -280,7 +334,8 @@ class _LoginPageState extends State<LoginPage> {
                 ),
                 child: Row(
                   children: [
-                    Icon(Icons.info_outline, size: 20, color: Colors.blue.shade700),
+                    Icon(Icons.info_outline,
+                        size: 20, color: Colors.blue.shade700),
                     const SizedBox(width: 8),
                     const Expanded(
                       child: Text(
@@ -295,32 +350,39 @@ class _LoginPageState extends State<LoginPage> {
           ),
           actions: [
             TextButton(
-              onPressed: () {
-                Navigator.of(context).pop();
-              },
+              onPressed: () => Navigator.of(context).pop(),
               child: const Text('Cancel'),
             ),
             TextButton(
               onPressed: () async {
                 try {
-                  UserCredential reAuthCred = await _auth.signInWithEmailAndPassword(
+                  UserCredential reAuthCred =
+                      await _auth.signInWithEmailAndPassword(
                     email: userEmail,
                     password: userPassword,
                   );
-                  
+
                   if (reAuthCred.user != null) {
                     await reAuthCred.user!.sendEmailVerification();
-                    await _auth.signOut(); 
-                    _showSnackBar('Verification email sent successfully. Please check your inbox.', Colors.green);
+                    await _auth.signOut();
+                    _showSnackBar(
+                        'Verification email sent successfully. Please check your inbox.',
+                        Colors.green);
                   }
                 } on FirebaseAuthException catch (e) {
                   if (e.code == 'too-many-requests') {
-                    _showSnackBar('Too many requests. Please wait a few minutes before trying again.', Colors.orange);
+                    _showSnackBar(
+                        'Too many requests. Please wait a few minutes before trying again.',
+                        Colors.orange);
                   } else {
-                    _showSnackBar('Failed to send verification email. Please try again later.', Colors.red);
+                    _showSnackBar(
+                        'Failed to send verification email. Please try again later.',
+                        Colors.red);
                   }
                 } catch (e) {
-                  _showSnackBar('Failed to send verification email. Please try again later.', Colors.red);
+                  _showSnackBar(
+                      'Failed to send verification email. Please try again later.',
+                      Colors.red);
                   debugPrint('Resend email error: $e');
                 }
               },
@@ -329,44 +391,60 @@ class _LoginPageState extends State<LoginPage> {
             ElevatedButton(
               onPressed: () async {
                 try {
-                  UserCredential reAuthCred = await _auth.signInWithEmailAndPassword(
+                  UserCredential reAuthCred =
+                      await _auth.signInWithEmailAndPassword(
                     email: userEmail,
                     password: userPassword,
                   );
-                  
+
                   await reAuthCred.user?.reload();
                   User? refreshedUser = _auth.currentUser;
-                  
+
                   if (refreshedUser != null && refreshedUser.emailVerified) {
-                    await _firestore.collection('users').doc(refreshedUser.uid).update({
+                    await _firestore
+                        .collection('users')
+                        .doc(refreshedUser.uid)
+                        .update({
                       'emailVerified': true,
                       'updatedAt': FieldValue.serverTimestamp(),
                     });
-                    
+
                     Navigator.of(context).pop();
-                    _showSnackBar('Email verified successfully! Logging you in...', Colors.green);
-                    
+                    _showSnackBar(
+                        'Email verified successfully! Logging you in...',
+                        Colors.green);
+
+                    // Save FCM token after successful email verification login
+                    await _registerFCMToken();
                     Navigator.pushReplacement(
                       context,
-                      MaterialPageRoute(builder: (context) => const HomeScreen()),
+                      MaterialPageRoute(
+                          builder: (context) => const HomeScreen()),
                     );
                   } else {
                     await _auth.signOut();
-                    _showSnackBar('Email not verified yet. Please check your inbox and click the verification link.', Colors.orange);
+                    _showSnackBar(
+                        'Email not verified yet. Please check your inbox and click the verification link.',
+                        Colors.orange);
                   }
                 } on FirebaseAuthException catch (e) {
                   await _auth.signOut();
-                  _showSnackBar('Unable to verify email status. Please try again.', Colors.red);
+                  _showSnackBar(
+                      'Unable to verify email status. Please try again.',
+                      Colors.red);
                   debugPrint('Verification check error: ${e.code}');
                 } catch (e) {
                   await _auth.signOut();
-                  _showSnackBar('Unable to verify email status. Please try again.', Colors.red);
+                  _showSnackBar(
+                      'Unable to verify email status. Please try again.',
+                      Colors.red);
                   debugPrint('Verification check error: $e');
                 }
               },
               style: ElevatedButton.styleFrom(
                 backgroundColor: const Color(0xFF2762EA),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8)),
               ),
               child: const Text('I\'ve Verified'),
             ),
@@ -376,7 +454,9 @@ class _LoginPageState extends State<LoginPage> {
     );
   }
 
-  // 🔑 Forgot Password Dialog
+  // ============================================================
+  // FORGOT PASSWORD DIALOG
+  // ============================================================
   void _showForgotPasswordDialog() {
     final TextEditingController emailController = TextEditingController();
     final formKey = GlobalKey<FormState>();
@@ -388,10 +468,12 @@ class _LoginPageState extends State<LoginPage> {
         return StatefulBuilder(
           builder: (context, setDialogState) {
             return AlertDialog(
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16)),
               title: Row(
                 children: [
-                  Icon(Icons.lock_reset, color: Colors.blue.shade700, size: 28),
+                  Icon(Icons.lock_reset,
+                      color: Colors.blue.shade700, size: 28),
                   const SizedBox(width: 10),
                   const Text(
                     'Reset Password',
@@ -407,7 +489,8 @@ class _LoginPageState extends State<LoginPage> {
                   children: [
                     const Text(
                       'Enter your email address and we\'ll send you a password reset link.',
-                      style: TextStyle(fontSize: 14, color: Colors.black87),
+                      style:
+                          TextStyle(fontSize: 14, color: Colors.black87),
                     ),
                     const SizedBox(height: 20),
                     TextFormField(
@@ -423,7 +506,8 @@ class _LoginPageState extends State<LoginPage> {
                       ),
                       validator: (v) {
                         if (v == null || v.isEmpty) return 'Email is required';
-                        if (!RegExp(r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$').hasMatch(v)) {
+                        if (!RegExp(r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$')
+                            .hasMatch(v)) {
                           return 'Enter a valid email';
                         }
                         return null;
@@ -439,7 +523,8 @@ class _LoginPageState extends State<LoginPage> {
                       ),
                       child: Row(
                         children: [
-                          Icon(Icons.info_outline, size: 20, color: Colors.blue.shade700),
+                          Icon(Icons.info_outline,
+                              size: 20, color: Colors.blue.shade700),
                           const SizedBox(width: 8),
                           const Expanded(
                             child: Text(
@@ -455,58 +540,68 @@ class _LoginPageState extends State<LoginPage> {
               ),
               actions: [
                 TextButton(
-                  onPressed: isProcessing ? null : () {
-                    Navigator.of(dialogContext).pop();
-                  },
+                  onPressed: isProcessing
+                      ? null
+                      : () => Navigator.of(dialogContext).pop(),
                   child: const Text('Cancel'),
                 ),
                 ElevatedButton(
-                  onPressed: isProcessing ? null : () async {
-                    if (!formKey.currentState!.validate()) return;
+                  onPressed: isProcessing
+                      ? null
+                      : () async {
+                          if (!formKey.currentState!.validate()) return;
 
-                    setDialogState(() => isProcessing = true);
+                          setDialogState(() => isProcessing = true);
 
-                    try {
-                      await _auth.sendPasswordResetEmail(
-                        email: emailController.text.trim(),
-                      );
+                          try {
+                            await _auth.sendPasswordResetEmail(
+                              email: emailController.text.trim(),
+                            );
 
-                      if (mounted) {
-                        Navigator.of(dialogContext).pop();
-                        _showSnackBar(
-                          'Password reset email sent! Check your inbox and follow the instructions.',
-                          Colors.green,
-                        );
-                      }
-                    } on FirebaseAuthException catch (e) {
-                      setDialogState(() => isProcessing = false);
-                      
-                      String errorMessage = 'Failed to send reset email';
-                      switch (e.code) {
-                        case 'user-not-found':
-                          errorMessage = 'No account found with this email address.';
-                          break;
-                        case 'invalid-email':
-                          errorMessage = 'Invalid email address format.';
-                          break;
-                        case 'too-many-requests':
-                          errorMessage = 'Too many requests. Please try again later.';
-                          break;
-                        default:
-                          errorMessage = e.message ?? 'An error occurred. Please try again.';
-                      }
-                      
-                      _showSnackBar(errorMessage, Colors.red);
-                    } catch (e) {
-                      setDialogState(() => isProcessing = false);
-                      _showSnackBar('An unexpected error occurred. Please try again.', Colors.red);
-                      debugPrint('Password reset error: $e');
-                    }
-                  },
+                            if (mounted) {
+                              Navigator.of(dialogContext).pop();
+                              _showSnackBar(
+                                'Password reset email sent! Check your inbox and follow the instructions.',
+                                Colors.green,
+                              );
+                            }
+                          } on FirebaseAuthException catch (e) {
+                            setDialogState(() => isProcessing = false);
+
+                            String errorMessage =
+                                'Failed to send reset email';
+                            switch (e.code) {
+                              case 'user-not-found':
+                                errorMessage =
+                                    'No account found with this email address.';
+                                break;
+                              case 'invalid-email':
+                                errorMessage =
+                                    'Invalid email address format.';
+                                break;
+                              case 'too-many-requests':
+                                errorMessage =
+                                    'Too many requests. Please try again later.';
+                                break;
+                              default:
+                                errorMessage = e.message ??
+                                    'An error occurred. Please try again.';
+                            }
+
+                            _showSnackBar(errorMessage, Colors.red);
+                          } catch (e) {
+                            setDialogState(() => isProcessing = false);
+                            _showSnackBar(
+                                'An unexpected error occurred. Please try again.',
+                                Colors.red);
+                            debugPrint('Password reset error: $e');
+                          }
+                        },
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF2762EA),
                     foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8)),
                   ),
                   child: isProcessing
                       ? const SizedBox(
@@ -527,40 +622,47 @@ class _LoginPageState extends State<LoginPage> {
     );
   }
 
-  // Google SSO Login with Auto-Registration & 2FA
+  // ============================================================
+  // GOOGLE SIGN IN
+  // ============================================================
   Future<void> _handleGoogleSignIn() async {
     setState(() => _isLoading = true);
 
     try {
       final GoogleSignInAccount? googleUser = await _googleSignIn.signIn();
-      
+
       if (googleUser == null) {
         setState(() => _isLoading = false);
         return;
       }
 
-      final GoogleSignInAuthentication googleAuth = await googleUser.authentication;
+      final GoogleSignInAuthentication googleAuth =
+          await googleUser.authentication;
 
       final credential = GoogleAuthProvider.credential(
         accessToken: googleAuth.accessToken,
         idToken: googleAuth.idToken,
       );
 
-      UserCredential userCredential = await _auth.signInWithCredential(credential);
+      UserCredential userCredential =
+          await _auth.signInWithCredential(credential);
       User? user = userCredential.user;
 
       if (user != null) {
         String uuid = user.uid;
-        DocumentSnapshot userDoc = await _firestore.collection('users').doc(uuid).get();
-        
-        // ✨ AUTO-CREATE ACCOUNT IF IT DOESN'T EXIST
+        DocumentSnapshot userDoc =
+            await _firestore.collection('users').doc(uuid).get();
+
         if (!userDoc.exists) {
           debugPrint('New Google user detected. Creating account...');
-          
-          String displayName = user.displayName ?? googleUser.displayName ?? 'Google User';
+
+          String displayName =
+              user.displayName ?? googleUser.displayName ?? 'Google User';
           List<String> nameParts = displayName.split(' ');
           String firstName = nameParts.isNotEmpty ? nameParts[0] : '';
-          String lastName = nameParts.length > 1 ? nameParts.sublist(1).join(' ') : '';
+          String lastName = nameParts.length > 1
+              ? nameParts.sublist(1).join(' ')
+              : '';
 
           await _firestore.collection('users').doc(uuid).set({
             'uuid': uuid,
@@ -581,8 +683,12 @@ class _LoginPageState extends State<LoginPage> {
 
           if (mounted) {
             setState(() => _isLoading = false);
-            _showSnackBar('Welcome! Your Google account has been registered.', Colors.green);
-            
+            _showSnackBar(
+                'Welcome! Your Google account has been registered.',
+                Colors.green);
+
+            // Save FCM token for new Google user
+            await _registerFCMToken();
             Navigator.pushReplacement(
               context,
               MaterialPageRoute(builder: (context) => const HomeScreen()),
@@ -591,9 +697,10 @@ class _LoginPageState extends State<LoginPage> {
           return;
         }
 
-        // ✨ EXISTING USER - SYNC EMAIL VERIFICATION STATUS
+        // Sync emailVerified for existing user
         if (userDoc.data() != null) {
-          Map<String, dynamic> userData = userDoc.data() as Map<String, dynamic>;
+          Map<String, dynamic> userData =
+              userDoc.data() as Map<String, dynamic>;
           if (userData['emailVerified'] != true) {
             await _firestore.collection('users').doc(user.uid).update({
               'emailVerified': true,
@@ -602,7 +709,6 @@ class _LoginPageState extends State<LoginPage> {
           }
         }
 
-        // ✨ CHECK 2FA STATUS
         bool is2FAEnabled = false;
         if (userDoc.data() != null) {
           Map<String, dynamic> data = userDoc.data() as Map<String, dynamic>;
@@ -612,13 +718,16 @@ class _LoginPageState extends State<LoginPage> {
         if (mounted) {
           setState(() => _isLoading = false);
           _showSnackBar('Welcome back!', Colors.green);
-          
+
           if (is2FAEnabled) {
+            // Don't save FCM token yet — user hasn't completed 2FA
             Navigator.push(
               context,
               MaterialPageRoute(builder: (context) => const OTPScreen()),
             );
           } else {
+            // Save FCM token on successful full login
+            await _registerFCMToken();
             Navigator.pushReplacement(
               context,
               MaterialPageRoute(builder: (context) => const HomeScreen()),
@@ -629,37 +738,43 @@ class _LoginPageState extends State<LoginPage> {
     } on FirebaseAuthException catch (e) {
       if (mounted) {
         setState(() => _isLoading = false);
-        
+
         String errorMessage = 'Google sign-in failed';
         switch (e.code) {
           case 'account-exists-with-different-credential':
-            errorMessage = 'An account with this email already exists using a different sign-in method. Please use your original sign-in method.';
+            errorMessage =
+                'An account with this email already exists using a different sign-in method. Please use your original sign-in method.';
             break;
           case 'invalid-credential':
-            errorMessage = 'Invalid credentials provided. Please try again.';
+            errorMessage =
+                'Invalid credentials provided. Please try again.';
             break;
           case 'operation-not-allowed':
-            errorMessage = 'Google sign-in is currently disabled. Please contact support.';
+            errorMessage =
+                'Google sign-in is currently disabled. Please contact support.';
             break;
           case 'user-disabled':
-            errorMessage = 'This account has been disabled. Please contact support for assistance.';
+            errorMessage =
+                'This account has been disabled. Please contact support for assistance.';
             break;
           case 'network-request-failed':
-            errorMessage = 'Network connection failed. Please check your internet connection and try again.';
+            errorMessage =
+                'Network connection failed. Please check your internet connection and try again.';
             break;
           default:
-            errorMessage = e.message ?? 'Google sign-in failed. Please try again.';
+            errorMessage =
+                e.message ?? 'Google sign-in failed. Please try again.';
         }
-        
+
         _showSnackBar(errorMessage, Colors.red);
       }
     } catch (e) {
       if (mounted) {
         setState(() => _isLoading = false);
-        
+
         try {
           await _googleSignIn.signOut();
-          
+
           if (_auth.currentUser != null) {
             try {
               DocumentSnapshot check = await _firestore
@@ -667,12 +782,13 @@ class _LoginPageState extends State<LoginPage> {
                   .doc(_auth.currentUser!.uid)
                   .get()
                   .timeout(const Duration(seconds: 5));
-              
+
               if (!check.exists) {
                 await _auth.currentUser?.delete();
               }
             } catch (firestoreError) {
-              debugPrint('Firestore check failed during cleanup: $firestoreError');
+              debugPrint(
+                  'Firestore check failed during cleanup: $firestoreError');
               try {
                 await _auth.currentUser?.delete();
               } catch (deleteError) {
@@ -683,8 +799,10 @@ class _LoginPageState extends State<LoginPage> {
         } catch (cleanupError) {
           debugPrint('Cleanup error: $cleanupError');
         }
-        
-        _showSnackBar('An unexpected error occurred. Please try again later.', Colors.red);
+
+        _showSnackBar(
+            'An unexpected error occurred. Please try again later.',
+            Colors.red);
         debugPrint('Google sign-in error: $e');
       }
     }
@@ -697,7 +815,8 @@ class _LoginPageState extends State<LoginPage> {
         backgroundColor: color,
         duration: const Duration(seconds: 4),
         behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        shape:
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
         margin: const EdgeInsets.all(16),
       ),
     );
@@ -732,11 +851,13 @@ class _LoginPageState extends State<LoginPage> {
                 const SizedBox(height: 10),
                 const Text(
                   'Smart Rack',
-                  style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold),
+                  style: TextStyle(
+                      fontSize: 26, fontWeight: FontWeight.bold),
                 ),
                 const Text(
                   'Smart Laundry Drying System',
-                  style: TextStyle(color: Colors.black54, fontSize: 13),
+                  style:
+                      TextStyle(color: Colors.black54, fontSize: 13),
                 ),
                 const SizedBox(height: 30),
 
@@ -786,8 +907,11 @@ class _LoginPageState extends State<LoginPage> {
                             border: OutlineInputBorder(),
                           ),
                           validator: (v) {
-                            if (v == null || v.isEmpty) return 'Email is required';
-                            if (!RegExp(r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$').hasMatch(v)) {
+                            if (v == null || v.isEmpty)
+                              return 'Email is required';
+                            if (!RegExp(
+                                    r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$')
+                                .hasMatch(v)) {
                               return 'Enter a valid email';
                             }
                             return null;
@@ -816,12 +940,13 @@ class _LoginPageState extends State<LoginPage> {
                                     ? Icons.visibility_off
                                     : Icons.visibility,
                               ),
-                              onPressed: () =>
-                                  setState(() => _isObscure = !_isObscure),
+                              onPressed: () => setState(
+                                  () => _isObscure = !_isObscure),
                             ),
                           ),
                           validator: (v) {
-                            if (v == null || v.isEmpty) return 'Password is required';
+                            if (v == null || v.isEmpty)
+                              return 'Password is required';
                             return null;
                           },
                         ),
@@ -869,37 +994,51 @@ class _LoginPageState extends State<LoginPage> {
 
                         Row(
                           children: [
-                            Expanded(child: Divider(thickness: 0.5, color: Colors.grey[400])),
+                            Expanded(
+                                child: Divider(
+                                    thickness: 0.5,
+                                    color: Colors.grey[400])),
                             Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 10),
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 10),
                               child: Text('Or continue with',
-                                  style: TextStyle(color: Colors.grey[600], fontSize: 12)),
+                                  style: TextStyle(
+                                      color: Colors.grey[600],
+                                      fontSize: 12)),
                             ),
-                            Expanded(child: Divider(thickness: 0.5, color: Colors.grey[400])),
+                            Expanded(
+                                child: Divider(
+                                    thickness: 0.5,
+                                    color: Colors.grey[400])),
                           ],
                         ),
-                        
+
                         const SizedBox(height: 15),
 
                         SizedBox(
                           width: double.infinity,
                           height: 48,
                           child: OutlinedButton(
-                            onPressed: _isLoading ? null : _handleGoogleSignIn,
+                            onPressed: _isLoading
+                                ? null
+                                : _handleGoogleSignIn,
                             style: OutlinedButton.styleFrom(
-                              side: BorderSide(color: Colors.grey.shade300),
+                              side: BorderSide(
+                                  color: Colors.grey.shade300),
                               shape: RoundedRectangleBorder(
                                 borderRadius: BorderRadius.circular(12),
                               ),
                               backgroundColor: Colors.white,
                             ),
                             child: Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
+                              mainAxisAlignment:
+                                  MainAxisAlignment.center,
                               children: [
                                 Image.asset(
                                   'assets/google.png',
                                   height: 24,
-                                  errorBuilder: (ctx, err, stack) => const Icon(
+                                  errorBuilder: (ctx, err, stack) =>
+                                      const Icon(
                                     Icons.g_mobiledata,
                                     size: 24,
                                     color: Color(0xFF2762EA),
@@ -956,7 +1095,8 @@ class _LoginPageState extends State<LoginPage> {
                   textAlign: TextAlign.center,
                   text: TextSpan(
                     text: 'By signing in, you agree to our ',
-                    style: const TextStyle(fontSize: 12, color: Colors.black54),
+                    style: const TextStyle(
+                        fontSize: 12, color: Colors.black54),
                     children: [
                       TextSpan(
                         text: 'Terms and Conditions',
@@ -971,7 +1111,8 @@ class _LoginPageState extends State<LoginPage> {
                             Navigator.push(
                               context,
                               MaterialPageRoute(
-                                builder: (_) => const TermsAndConditionsScreen(),
+                                builder: (_) =>
+                                    const TermsAndConditionsScreen(),
                               ),
                             );
                           },
