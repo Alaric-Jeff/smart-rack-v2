@@ -218,34 +218,37 @@ class _QRScannerScreenState extends State<QRScannerScreen>
 
   /// Instruction texts above and below the frame
   Widget _buildLabels(double scanAreaSize) {
-    return Column(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        // Text above frame
-        const Text(
-          'Point camera at the QR code\non your Smart Rack device',
-          textAlign: TextAlign.center,
-          style: TextStyle(
-            color: Colors.white,
-            fontSize: 16,
-            fontWeight: FontWeight.w500,
-            shadows: [Shadow(blurRadius: 8, color: Colors.black54)],
+    return SizedBox(
+      width: double.infinity,
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          // Text above frame
+          const Text(
+            'Point camera at the QR code\non your Smart Rack device',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 16,
+              fontWeight: FontWeight.w500,
+              shadows: [Shadow(blurRadius: 8, color: Colors.black54)],
+            ),
           ),
-        ),
 
-        SizedBox(height: 32 + scanAreaSize + 32),
+          SizedBox(height: 32 + scanAreaSize + 32),
 
-        // Text below frame
-        const Text(
-          'Make sure the QR code is well-lit\nand fits inside the frame',
-          textAlign: TextAlign.center,
-          style: TextStyle(
-            color: Colors.white60,
-            fontSize: 13,
-            shadows: [Shadow(blurRadius: 6, color: Colors.black54)],
+          // Text below frame
+          const Text(
+            'Make sure the QR code is well-lit\nand fits inside the frame',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: Colors.white60,
+              fontSize: 13,
+              shadows: [Shadow(blurRadius: 6, color: Colors.black54)],
+            ),
           ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 
@@ -374,4 +377,4 @@ class _CornerPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_CornerPainter oldDelegate) => false;
-}
+} 
